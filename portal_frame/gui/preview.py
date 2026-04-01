@@ -38,7 +38,29 @@ class FramePreview(tk.Canvas):
         span = geom.get("span", 12)
         eave = geom.get("eave_height", 4.5)
         pitch = geom.get("roof_pitch", 5)
-        ridge = eave + (span / 2) * math.tan(math.radians(pitch))
+        roof_type = geom.get("roof_type", "gable")
+        apex_pct = geom.get("apex_position_pct", 50.0)
+
+        if roof_type == "mono":
+            # Monopitch: single rafter from (0, eave) to (span, ridge)
+            ridge = eave + span * math.tan(math.radians(pitch))
+            nodes = {
+                1: (0, 0),
+                2: (0, eave),
+                3: (span, ridge),
+                4: (span, 0),
+            }
+        else:
+            # Gable: apex at apex_pct % of span
+            apex_x = span * apex_pct / 100.0
+            ridge = eave + apex_x * math.tan(math.radians(pitch))
+            nodes = {
+                1: (0, 0),
+                2: (0, eave),
+                3: (apex_x, ridge),
+                4: (span, eave),
+                5: (span, 0),
+            }
 
         # Draw grid
         for i in range(0, w, 30):
@@ -67,18 +89,19 @@ class FramePreview(tk.Canvas):
         gy = oy
         self.create_line(gx1, gy, gx2, gy, fill=COLORS["fg_dim"], width=1, dash=(4, 2))
 
-        # Frame nodes
-        nodes = {
-            1: (0, 0), 2: (0, eave), 3: (span / 2, ridge),
-            4: (span, eave), 5: (span, 0),
-        }
+        # Transform nodes to screen coords
         ns = {k: tx(*v) for k, v in nodes.items()}
 
         # Members
-        self.create_line(*ns[1], *ns[2], fill=COLORS["frame_col"], width=3)
-        self.create_line(*ns[5], *ns[4], fill=COLORS["frame_col"], width=3)
-        self.create_line(*ns[2], *ns[3], fill=COLORS["frame_raf"], width=3)
-        self.create_line(*ns[3], *ns[4], fill=COLORS["frame_raf"], width=3)
+        if roof_type == "mono":
+            self.create_line(*ns[1], *ns[2], fill=COLORS["frame_col"], width=3)
+            self.create_line(*ns[2], *ns[3], fill=COLORS["frame_raf"], width=3)
+            self.create_line(*ns[3], *ns[4], fill=COLORS["frame_col"], width=3)
+        else:
+            self.create_line(*ns[1], *ns[2], fill=COLORS["frame_col"], width=3)
+            self.create_line(*ns[5], *ns[4], fill=COLORS["frame_col"], width=3)
+            self.create_line(*ns[2], *ns[3], fill=COLORS["frame_raf"], width=3)
+            self.create_line(*ns[3], *ns[4], fill=COLORS["frame_raf"], width=3)
 
         # Nodes
         r = 4
@@ -86,8 +109,20 @@ class FramePreview(tk.Canvas):
             self.create_oval(pt[0]-r, pt[1]-r, pt[0]+r, pt[1]+r,
                              fill=COLORS["frame_node"], outline="")
 
-        # Supports
-        for nid, condition in [(1, supports[0]), (5, supports[1])]:
+        # Supports — find base nodes (y==0), sorted by x
+        base_nodes = sorted(
+            [(nid, coord) for nid, coord in nodes.items() if coord[1] == 0],
+            key=lambda item: item[1][0]
+        )
+        base_node_ids = [nid for nid, _ in base_nodes]
+        support_pairs = []
+        if len(base_node_ids) >= 2:
+            support_pairs = [
+                (base_node_ids[0], supports[0]),
+                (base_node_ids[-1], supports[1]),
+            ]
+
+        for nid, condition in support_pairs:
             bx, by = ns[nid]
             if condition == "pinned":
                 sz = 12
@@ -113,23 +148,40 @@ class FramePreview(tk.Canvas):
 
         # Dimension annotations
         dim_col = COLORS["fg_dim"]
+
+        # Span annotation using actual base node screen positions
+        left_base_sx = ns[base_node_ids[0]][0] if base_node_ids else ox
+        right_base_sx = ns[base_node_ids[-1]][0] if len(base_node_ids) >= 2 else ox + span * scale
+
         dy = oy + 30
-        self.create_line(ns[1][0], dy, ns[5][0], dy, fill=dim_col, width=1, arrow="both")
-        self.create_text((ns[1][0] + ns[5][0]) / 2, dy + 12, text=f"{span:.1f} m",
-                         fill=dim_col, font=FONT_SMALL, anchor="n")
+        self.create_line(left_base_sx, dy, right_base_sx, dy,
+                         fill=dim_col, width=1, arrow="both")
+        self.create_text((left_base_sx + right_base_sx) / 2, dy + 12,
+                         text=f"{span:.1f} m", fill=dim_col, font=FONT_SMALL, anchor="n")
+
+        # Eave height annotation
         dx = ns[1][0] - 25
         self.create_line(dx, ns[1][1], dx, ns[2][1], fill=dim_col, width=1, arrow="both")
         self.create_text(dx - 5, (ns[1][1] + ns[2][1]) / 2, text=f"{eave:.1f} m",
                          fill=dim_col, font=FONT_SMALL, anchor="e")
-        dx2 = ns[3][0]
-        self.create_line(dx2, ns[2][1], dx2, ns[3][1], fill=dim_col, width=1, arrow="both")
-        rise = ridge - eave
-        self.create_text(dx2 + 10, (ns[2][1] + ns[3][1]) / 2, text=f"{rise:.2f} m",
-                         fill=dim_col, font=FONT_SMALL, anchor="w")
-        mx = (ns[2][0] + ns[3][0]) / 2
-        my = (ns[2][1] + ns[3][1]) / 2
-        self.create_text(mx - 15, my - 12, text=f"{pitch:.1f} deg",
-                         fill=COLORS["frame_raf"], font=FONT_SMALL, anchor="e")
+
+        if roof_type == "gable":
+            # Rise annotation at ridge (node 3)
+            dx2 = ns[3][0]
+            self.create_line(dx2, ns[2][1], dx2, ns[3][1], fill=dim_col, width=1, arrow="both")
+            rise = ridge - eave
+            self.create_text(dx2 + 10, (ns[2][1] + ns[3][1]) / 2, text=f"{rise:.2f} m",
+                             fill=dim_col, font=FONT_SMALL, anchor="w")
+            mx = (ns[2][0] + ns[3][0]) / 2
+            my = (ns[2][1] + ns[3][1]) / 2
+            self.create_text(mx - 15, my - 12, text=f"{pitch:.1f} deg",
+                             fill=COLORS["frame_raf"], font=FONT_SMALL, anchor="e")
+        else:
+            # Pitch label along the single rafter for mono
+            mx = (ns[2][0] + ns[3][0]) / 2
+            my = (ns[2][1] + ns[3][1]) / 2
+            self.create_text(mx, my - 12, text=f"{pitch:.1f} deg",
+                             fill=COLORS["frame_raf"], font=FONT_SMALL, anchor="s")
 
         # Legend
         ly = 15

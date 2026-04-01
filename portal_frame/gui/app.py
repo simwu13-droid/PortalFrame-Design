@@ -231,6 +231,23 @@ class PortalFrameApp(tk.Tk):
 
         self._section_header(parent, "GEOMETRY")
 
+        # Roof type selector
+        roof_type_frame = tk.Frame(parent, bg=COLORS["bg_panel"])
+        roof_type_frame.pack(fill="x", **pad)
+
+        tk.Label(roof_type_frame, text="Roof Type", font=FONT, fg=COLORS["fg"],
+                 bg=COLORS["bg_panel"], width=14, anchor="w").pack(side="left")
+        self.roof_type_var = tk.StringVar(value="gable")
+        for text, val in [("Gable", "gable"), ("Mono", "mono")]:
+            tk.Radiobutton(
+                roof_type_frame, text=text, variable=self.roof_type_var,
+                value=val, font=FONT, fg=COLORS["fg"],
+                bg=COLORS["bg_panel"], selectcolor=COLORS["bg_input"],
+                activebackground=COLORS["bg_panel"],
+                activeforeground=COLORS["fg"],
+                command=self._on_roof_type_change,
+            ).pack(side="left", padx=(4, 8))
+
         self.span = LabeledEntry(parent, "Span", 12.0, "m")
         self.span.pack(fill="x", **pad)
         self.span.bind_change(self._update_preview)
@@ -242,6 +259,18 @@ class PortalFrameApp(tk.Tk):
         self.pitch = LabeledEntry(parent, "Roof Pitch", 5.0, "deg")
         self.pitch.pack(fill="x", **pad)
         self.pitch.bind_change(self._update_preview)
+
+        self.apex_frame = tk.Frame(parent, bg=COLORS["bg_panel"])
+        self.apex_frame.pack(fill="x", **pad)
+        self.apex_position = LabeledEntry(self.apex_frame, "Apex Position", 50.0, "% of span")
+        self.apex_position.pack(fill="x")
+        self.apex_position.bind_change(self._on_apex_change)
+
+        self.pitch_warning_label = tk.Label(
+            parent, text="", font=FONT_SMALL, fg=COLORS["warning"],
+            bg=COLORS["bg_panel"], anchor="w", justify="left",
+        )
+        self.pitch_warning_label.pack(fill="x", padx=10, pady=(0, 2))
 
         self.bay = LabeledEntry(parent, "Bay Spacing", 6.0, "m")
         self.bay.pack(fill="x", **pad)
@@ -331,6 +360,40 @@ class PortalFrameApp(tk.Tk):
             activebackground=COLORS["bg_panel"],
             activeforeground=COLORS["fg"]
         ).pack(fill="x", padx=10, pady=(0, 4))
+
+    def _on_roof_type_change(self, *_):
+        if self.roof_type_var.get() == "mono":
+            self.apex_frame.pack_forget()
+            self.pitch_warning_label.pack_forget()
+        else:
+            # Show apex frame and warning label
+            self.apex_frame.pack(fill="x", padx=10, pady=(0, 2))
+            self.pitch_warning_label.pack(fill="x", padx=10, pady=(0, 2))
+        self._check_pitch_warnings()
+        self._update_preview()
+
+    def _on_apex_change(self, *_):
+        self._check_pitch_warnings()
+        self._update_preview()
+
+    def _check_pitch_warnings(self):
+        from portal_frame.models.validation import validate_geometry_pitch
+        geom = self._build_geometry()
+        warnings = validate_geometry_pitch(geom)
+        if warnings:
+            self.pitch_warning_label.config(text="\n".join(warnings))
+        else:
+            self.pitch_warning_label.config(text="")
+
+    def _build_geometry(self) -> PortalFrameGeometry:
+        return PortalFrameGeometry(
+            span=self.span.get(),
+            eave_height=self.eave.get(),
+            roof_pitch=self.pitch.get(),
+            bay_spacing=self.bay.get(),
+            roof_type=self.roof_type_var.get(),
+            apex_position_pct=self.apex_position.get() if self.roof_type_var.get() == "gable" else 50.0,
+        )
 
     # ── Wind Tab ──
 
@@ -488,9 +551,10 @@ class PortalFrameApp(tk.Tk):
             pitch = self.pitch.get()
             depth = self.building_depth.get()
 
+            split_pct = self.apex_position.get() if self.roof_type_var.get() == "gable" else 50.0
             cases = generate_standard_wind_cases(
                 span=span, eave_height=eave, roof_pitch=pitch,
-                building_depth=depth, cp=cp,
+                building_depth=depth, cp=cp, split_pct=split_pct,
             )
 
             while self.wind_table.rows:
@@ -523,6 +587,8 @@ class PortalFrameApp(tk.Tk):
             "span": self.span.get(),
             "eave_height": self.eave.get(),
             "roof_pitch": self.pitch.get(),
+            "roof_type": self.roof_type_var.get(),
+            "apex_position_pct": self.apex_position.get(),
         }
         supports = (self.left_support.get(), self.right_support.get())
         loads = self._build_preview_loads()
@@ -545,18 +611,21 @@ class PortalFrameApp(tk.Tk):
         if bay <= 0:
             return None
 
+        is_mono = self.roof_type_var.get() == "mono"
         members = []
 
         if selected.startswith("G "):
             w_roof = self.dead_roof.get() * bay
             w_wall = self.dead_wall.get() * bay
             if w_roof > 0:
-                for nf, nt in [(2, 3), (3, 4)]:
+                rafter_pairs = [(2, 3)] if is_mono else [(2, 3), (3, 4)]
+                for nf, nt in rafter_pairs:
                     members.append({"from": nf, "to": nt, "segments": [
                         {"start_pct": 0, "end_pct": 100, "w_kn": w_roof,
                          "direction": "global_y"}]})
             if w_wall > 0:
-                for nf, nt in [(1, 2), (5, 4)]:
+                col_pairs = [(1, 2), (4, 3)] if is_mono else [(1, 2), (5, 4)]
+                for nf, nt in col_pairs:
                     members.append({"from": nf, "to": nt, "segments": [
                         {"start_pct": 0, "end_pct": 100, "w_kn": w_wall,
                          "direction": "global_y"}]})
@@ -564,7 +633,8 @@ class PortalFrameApp(tk.Tk):
         elif selected.startswith("Q "):
             w_live = self.live_roof.get() * bay
             if w_live > 0:
-                for nf, nt in [(2, 3), (3, 4)]:
+                rafter_pairs = [(2, 3)] if is_mono else [(2, 3), (3, 4)]
+                for nf, nt in rafter_pairs:
                     members.append({"from": nf, "to": nt, "segments": [
                         {"start_pct": 0, "end_pct": 100, "w_kn": w_live,
                          "direction": "global_y"}]})
@@ -580,18 +650,29 @@ class PortalFrameApp(tk.Tk):
             if not wc:
                 return None
 
+            left_col = (1, 2)
+            right_col = (4, 3) if is_mono else (5, 4)
+
             if wc.get("left_wall", 0) != 0:
-                members.append({"from": 1, "to": 2, "segments": [
+                members.append({"from": left_col[0], "to": left_col[1], "segments": [
                     {"start_pct": 0, "end_pct": 100,
                      "w_kn": wc["left_wall"] * bay,
                      "direction": "global_x"}]})
             if wc.get("right_wall", 0) != 0:
-                members.append({"from": 5, "to": 4, "segments": [
+                members.append({"from": right_col[0], "to": right_col[1], "segments": [
                     {"start_pct": 0, "end_pct": 100,
                      "w_kn": -wc["right_wall"] * bay,
                      "direction": "global_x"}]})
 
-            if wc.get("is_crosswind") and wc.get("left_rafter_zones"):
+            if is_mono:
+                # Single rafter for mono roof
+                val = wc.get("left_rafter", 0)
+                if val != 0:
+                    members.append({"from": 2, "to": 3, "segments": [
+                        {"start_pct": 0, "end_pct": 100,
+                         "w_kn": val * bay,
+                         "direction": "normal"}]})
+            elif wc.get("is_crosswind") and wc.get("left_rafter_zones"):
                 for nf, nt, zone_key in [(2, 3, "left_rafter_zones"),
                                           (3, 4, "right_rafter_zones")]:
                     segs = []
@@ -631,13 +712,15 @@ class PortalFrameApp(tk.Tk):
         self.sec_info.config(text="\n".join(lines))
 
     def _update_summary(self):
-        span = self.span.get()
-        pitch = self.pitch.get()
-        eave = self.eave.get()
-        ridge = eave + (span / 2) * math.tan(math.radians(pitch)) if pitch else eave
+        geom = self._build_geometry()
+        roof_label = "Gable" if geom.roof_type == "gable" else "Mono"
+        ridge = geom.ridge_height
+        apex_info = ""
+        if geom.roof_type == "gable" and geom.apex_position_pct != 50.0:
+            apex_info = f"  |  Apex: {geom.apex_position_pct:.0f}%"
         self.summary_label.config(
-            text=f"Span: {span:.1f}m  |  Eave: {eave:.1f}m  |  "
-                 f"Ridge: {ridge:.2f}m  |  Pitch: {pitch:.1f} deg"
+            text=f"{roof_label}  |  Span: {geom.span:.1f}m  |  Eave: {geom.eave_height:.1f}m  |  "
+                 f"Ridge: {ridge:.2f}m  |  Pitch: {geom.roof_pitch:.1f} deg{apex_info}"
         )
 
     def _generate(self):
@@ -656,12 +739,7 @@ class PortalFrameApp(tk.Tk):
             col_sec = self.section_library[col_name]
             raf_sec = self.section_library[raf_name]
 
-            geom = PortalFrameGeometry(
-                span=self.span.get(),
-                eave_height=self.eave.get(),
-                roof_pitch=self.pitch.get(),
-                bay_spacing=self.bay.get(),
-            )
+            geom = self._build_geometry()
 
             supports = SupportCondition(
                 left_base=self.left_support.get(),
