@@ -254,11 +254,11 @@ class PortalFrameApp(tk.Tk):
 
         self.span = LabeledEntry(parent, "Span", 12.0, "m")
         self.span.pack(fill="x", **pad)
-        self.span.bind_change(self._update_preview)
+        self.span.bind_change(self._on_frame_change)
 
         self.eave = LabeledEntry(parent, "Eave Height", 4.5, "m")
         self.eave.pack(fill="x", **pad)
-        self.eave.bind_change(self._update_preview)
+        self.eave.bind_change(self._on_frame_change)
 
         self.pitch = LabeledEntry(parent, "Roof Pitch 1 (a1)", 5.0, "deg")
         self.pitch.pack(fill="x", **pad)
@@ -278,6 +278,7 @@ class PortalFrameApp(tk.Tk):
 
         self.bay = LabeledEntry(parent, "Bay Spacing", 6.0, "m")
         self.bay.pack(fill="x", **pad)
+        self.bay.bind_change(self._on_frame_change)
 
         self.building_depth = LabeledEntry(parent, "Building Depth (d)", 24.0, "m")
         self.building_depth.pack(fill="x", **pad)
@@ -299,8 +300,8 @@ class PortalFrameApp(tk.Tk):
                                  anchor="w", justify="left")
         self.sec_info.pack(fill="x", padx=10, pady=(0, 4))
 
-        self.col_section.bind_change(self._update_section_info)
-        self.raf_section.bind_change(self._update_section_info)
+        self.col_section.bind_change(self._on_section_change)
+        self.raf_section.bind_change(self._on_section_change)
         self._update_section_info()
 
         self._section_header(parent, "SUPPORTS")
@@ -348,9 +349,11 @@ class PortalFrameApp(tk.Tk):
 
         self.dead_roof = LabeledEntry(parent, "Dead Load - Roof (SDL)", 0.15, "kPa")
         self.dead_roof.pack(fill="x", **pad)
+        self.dead_roof.bind_change(self._on_frame_change)
 
         self.dead_wall = LabeledEntry(parent, "Dead Load - Wall", 0.10, "kPa")
         self.dead_wall.pack(fill="x", **pad)
+        self.dead_wall.bind_change(self._on_frame_change)
 
         self.live_roof = LabeledEntry(parent, "Live Load - Roof (Q)", 0.25, "kPa")
         self.live_roof.pack(fill="x", **pad)
@@ -365,6 +368,16 @@ class PortalFrameApp(tk.Tk):
             activeforeground=COLORS["fg"]
         ).pack(fill="x", padx=10, pady=(0, 4))
 
+    def _on_frame_change(self, *_):
+        """Geometry or dead load changed — update preview and EQ results."""
+        self._update_preview()
+        self._update_eq_results()
+
+    def _on_section_change(self, *_):
+        """Section selection changed — update info display and EQ results."""
+        self._update_section_info()
+        self._update_eq_results()
+
     def _on_roof_type_change(self, *_):
         if self.roof_type_var.get() == "mono":
             self.pitch2_frame.pack_forget()
@@ -375,10 +388,12 @@ class PortalFrameApp(tk.Tk):
             self.pitch_warning_label.pack(fill="x", padx=10, pady=(0, 2), after=self.pitch2_frame)
         self._check_pitch_warnings()
         self._update_preview()
+        self._update_eq_results()
 
     def _on_pitch_change(self, *_):
         self._check_pitch_warnings()
         self._update_preview()
+        self._update_eq_results()
 
     def _check_pitch_warnings(self):
         from portal_frame.models.validation import validate_geometry_pitch
@@ -618,11 +633,47 @@ class PortalFrameApp(tk.Tk):
             self.eq_mu.set(1.0); self.eq_Sp.set(1.0)
         self._update_eq_results()
 
+    def _estimate_member_self_weight(self, geom) -> float:
+        """Estimate steel member self-weight in kN for one bay frame."""
+        STEEL_DENSITY = 7850  # kg/m3
+        G = 9.81 / 1000  # kN per kg
+
+        col_name = self.col_section.get()
+        raf_name = self.raf_section.get()
+        col_ax = 0.0  # m2
+        raf_ax = 0.0
+        if col_name in self.section_library:
+            col_ax = self.section_library[col_name].Ax * 1e-6
+        if raf_name in self.section_library:
+            raf_ax = self.section_library[raf_name].Ax * 1e-6
+
+        # Column lengths (both sides)
+        left_col_len = geom.eave_height
+        if geom.roof_type == "mono":
+            right_col_len = geom.ridge_height
+        else:
+            right_col_len = geom.eave_height
+
+        # Rafter lengths
+        rise = geom.ridge_height - geom.eave_height
+        if geom.roof_type == "mono":
+            raf_len = math.hypot(geom.span, rise)
+        else:
+            left_run = geom.apex_x
+            right_run = geom.span - geom.apex_x
+            raf_len = math.hypot(left_run, rise) + math.hypot(right_run, rise)
+
+        col_wt = col_ax * (left_col_len + right_col_len) * STEEL_DENSITY * G
+        raf_wt = raf_ax * raf_len * STEEL_DENSITY * G
+        return col_wt + raf_wt
+
     def _update_eq_results(self, *_):
         if not self.eq_enabled_var.get():
             return
         try:
             geom = self._build_geometry()
+            sw_kn = self._estimate_member_self_weight(geom)
+
             eq = EarthquakeInputs(
                 Z=self.eq_Z.get(),
                 soil_class=self.eq_soil.get(),
@@ -631,7 +682,7 @@ class PortalFrameApp(tk.Tk):
                 mu=self.eq_mu.get(),
                 Sp=self.eq_Sp.get(),
                 near_fault=self.eq_near_fault.get(),
-                extra_seismic_mass=self.eq_extra_mass.get(),
+                extra_seismic_mass=self.eq_extra_mass.get() + sw_kn,
             )
             result = calculate_earthquake_forces(
                 geom, self.dead_roof.get(), self.dead_wall.get(), eq,
@@ -642,7 +693,10 @@ class PortalFrameApp(tk.Tk):
                 f"k_mu = {result['k_mu']:.3f}\n"
                 f"Cd(T1) ULS = {result['Cd_uls']:.4f}\n"
                 f"Cd(T1) SLS = {result['Cd_sls']:.4f}\n"
-                f"Wt = {result['Wt']:.2f} kN\n"
+                f"Wt = {result['Wt']:.2f} kN  "
+                f"(SDL={result['Wt'] - eq.extra_seismic_mass:.2f} "
+                f"+ SW={sw_kn:.2f} "
+                f"+ extra={self.eq_extra_mass.get():.2f})\n"
                 f"V_uls = {result['V_uls']:.2f} kN\n"
                 f"V_sls = {result['V_sls']:.2f} kN\n"
                 f"F_node ULS = {result['F_node']:.2f} kN (per knee)\n"
