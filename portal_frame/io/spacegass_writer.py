@@ -148,19 +148,38 @@ class SpaceGassWriter:
             case_map[wc.name] = next_case
             next_case += 1
 
+        # Derive member roles from topology (supports mono and gable)
+        rafter_ids = sorted(
+            m.id for m in self.topology.members.values() if m.section_id == 2
+        )
+        column_ids = sorted(
+            m.id for m in self.topology.members.values() if m.section_id == 1
+        )
+
+        # Identify left/right columns by x-position of their base node
+        left_col_id = None
+        right_col_id = None
+        for mid in column_ids:
+            mem = self.topology.members[mid]
+            base_node = self.topology.nodes[mem.node_start]
+            if base_node.x == 0.0:
+                left_col_id = mid
+            else:
+                right_col_id = mid
+
         bay = self.bay_spacing
         lines = ["MEMBFORCES"]
 
         # Case 1: Dead Load (G) — gravity loads downward (global -Y)
         if self.loads.dead_load_roof > 0:
             w = -self.loads.dead_load_roof * bay
-            for mem in [2, 3]:  # rafters
+            for mem in rafter_ids:
                 lines.append(
                     f"1,{mem},1,G,%,0.0,100.0,0.0,0.0,{w:.4f},{w:.4f},0.0,0.0"
                 )
         if self.loads.dead_load_wall > 0:
             w = -self.loads.dead_load_wall * bay
-            for mem in [1, 4]:  # columns
+            for mem in column_ids:
                 lines.append(
                     f"1,{mem},1,G,%,0.0,100.0,0.0,0.0,{w:.4f},{w:.4f},0.0,0.0"
                 )
@@ -168,7 +187,7 @@ class SpaceGassWriter:
         # Case 2: Live Load (Q) — gravity on rafters (global -Y)
         if self.loads.live_load_roof > 0:
             w = -self.loads.live_load_roof * bay
-            for mem in [2, 3]:
+            for mem in rafter_ids:
                 lines.append(
                     f"2,{mem},1,G,%,0.0,100.0,0.0,0.0,{w:.4f},{w:.4f},0.0,0.0"
                 )
@@ -184,23 +203,31 @@ class SpaceGassWriter:
                 return sl
 
             # Wall loads — horizontal (global X direction)
-            if wc.left_wall != 0:
-                sl = next_slice(1)
+            if wc.left_wall != 0 and left_col_id is not None:
+                sl = next_slice(left_col_id)
                 w = wc.left_wall * bay
                 lines.append(
-                    f"{cn},1,{sl},G,%,0.0,100.0,{w:.4f},{w:.4f},0.0,0.0,0.0,0.0"
+                    f"{cn},{left_col_id},{sl},G,%,0.0,100.0,{w:.4f},{w:.4f},0.0,0.0,0.0,0.0"
                 )
-            if wc.right_wall != 0:
-                sl = next_slice(4)
+            if wc.right_wall != 0 and right_col_id is not None:
+                sl = next_slice(right_col_id)
                 w = -wc.right_wall * bay
                 lines.append(
-                    f"{cn},4,{sl},G,%,0.0,100.0,{w:.4f},{w:.4f},0.0,0.0,0.0,0.0"
+                    f"{cn},{right_col_id},{sl},G,%,0.0,100.0,{w:.4f},{w:.4f},0.0,0.0,0.0,0.0"
                 )
             # Rafter loads — normal to surface (local Y)
-            for mem, zones, uniform in [
-                (2, wc.left_rafter_zones, wc.left_rafter),
-                (3, wc.right_rafter_zones, wc.right_rafter),
-            ]:
+            if len(rafter_ids) == 2:
+                # Gable: left rafter gets left_rafter data, right rafter gets right_rafter data
+                rafter_data = [
+                    (rafter_ids[0], wc.left_rafter_zones, wc.left_rafter),
+                    (rafter_ids[1], wc.right_rafter_zones, wc.right_rafter),
+                ]
+            else:
+                # Mono: single rafter gets left_rafter zones/uniform only
+                rafter_data = [
+                    (rafter_ids[0], wc.left_rafter_zones, wc.left_rafter),
+                ]
+            for mem, zones, uniform in rafter_data:
                 if wc.is_crosswind and zones:
                     for zone in zones:
                         if zone.pressure != 0:
