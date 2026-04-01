@@ -292,15 +292,16 @@ class SpaceGassWriter:
         F_uls = self._eq_result["F_node"]
         lines = ["JOINTLOADS"]
 
+        # Format: Case,Node,FX,FY,FZ,MX,MY,MZ,LoadCategory
         # E+ case: +X force at each eave node
         cn_pos = self._eq_case_map["E+"]
         for node in eave_nodes:
-            lines.append(f"{cn_pos},{node.id},{F_uls:.4f},0.0,0.0,0.0,0.0,0.0")
+            lines.append(f"{cn_pos},{node.id},{F_uls:.4f},0.0,0.0,0.0,0.0,0.0,")
 
         # E- case: -X force at each eave node
         cn_neg = self._eq_case_map["E-"]
         for node in eave_nodes:
-            lines.append(f"{cn_neg},{node.id},{-F_uls:.4f},0.0,0.0,0.0,0.0,0.0")
+            lines.append(f"{cn_neg},{node.id},{-F_uls:.4f},0.0,0.0,0.0,0.0,0.0,")
 
         lines.append("")
         return "\n".join(lines)
