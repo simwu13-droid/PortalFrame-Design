@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass, field
 
 from portal_frame.models.geometry import PortalFrameGeometry
-from portal_frame.models.loads import RafterZoneLoad, WindCase, LoadInput
+from portal_frame.models.loads import RafterZoneLoad, WindCase, LoadInput, EarthquakeInputs
 from portal_frame.models.supports import SupportCondition
 from portal_frame.io.section_library import load_all_sections, get_section
 from portal_frame.standards.wind_nzs1170_2 import WindCpInputs, generate_standard_wind_cases
@@ -25,11 +25,14 @@ class FrameConfig:
     @classmethod
     def from_dict(cls, cfg: dict) -> "FrameConfig":
         """Parse and validate a JSON config dict."""
+        g = cfg["geometry"]
         geom = PortalFrameGeometry(
-            span=cfg["geometry"]["span"],
-            eave_height=cfg["geometry"]["eave_height"],
-            roof_pitch=cfg["geometry"]["roof_pitch"],
-            bay_spacing=cfg["geometry"]["bay_spacing"],
+            span=g["span"],
+            eave_height=g["eave_height"],
+            roof_pitch=g["roof_pitch"],
+            bay_spacing=g.get("bay_spacing", 6.0),
+            roof_type=g.get("roof_type", "gable"),
+            apex_position_pct=g.get("apex_position_pct", 50.0),
         )
 
         supports = SupportCondition(
@@ -45,12 +48,27 @@ class FrameConfig:
             wc = WindCase(**wc_dict, left_rafter_zones=zones_left, right_rafter_zones=zones_right)
             wind_cases.append(wc)
 
+        eq = None
+        if "earthquake" in cfg:
+            eq_cfg = cfg["earthquake"]
+            eq = EarthquakeInputs(
+                Z=eq_cfg.get("Z", 0.0),
+                soil_class=eq_cfg.get("soil_class", "C"),
+                R_uls=eq_cfg.get("R_uls", 1.0),
+                R_sls=eq_cfg.get("R_sls", 0.25),
+                mu=eq_cfg.get("mu", 1.0),
+                Sp=eq_cfg.get("Sp", 1.0),
+                near_fault=eq_cfg.get("near_fault", 1.0),
+                extra_seismic_mass=eq_cfg.get("extra_seismic_mass", 0.0),
+            )
+
         loads = LoadInput(
             dead_load_roof=cfg.get("loads", {}).get("dead_load_roof", 0.0),
             dead_load_wall=cfg.get("loads", {}).get("dead_load_wall", 0.0),
             live_load_roof=cfg.get("loads", {}).get("live_load_roof", 0.25),
             wind_cases=wind_cases,
             include_self_weight=cfg.get("loads", {}).get("include_self_weight", True),
+            earthquake=eq,
         )
 
         return cls(
@@ -94,8 +112,11 @@ def create_example_config() -> dict:
     eave = 4.5
     pitch = 5.0
     depth = 50.0
+    roof_type = "gable"
+    apex_position_pct = 50.0
     cp = WindCpInputs()
-    cases = generate_standard_wind_cases(span, eave, pitch, depth, cp)
+    split_pct = apex_position_pct if roof_type == "gable" else 50.0
+    cases = generate_standard_wind_cases(span, eave, pitch, depth, cp, split_pct=split_pct)
 
     wind_list = []
     for wc in cases:
