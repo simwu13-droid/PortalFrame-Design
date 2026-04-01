@@ -370,8 +370,9 @@ class PortalFrameApp(tk.Tk):
             self.pitch2_frame.pack_forget()
             self.pitch_warning_label.pack_forget()
         else:
-            self.pitch2_frame.pack(fill="x", padx=10, pady=(0, 2))
-            self.pitch_warning_label.pack(fill="x", padx=10, pady=(0, 2))
+            # Re-pack after pitch1 widget to maintain correct order
+            self.pitch2_frame.pack(fill="x", padx=10, pady=(0, 2), after=self.pitch)
+            self.pitch_warning_label.pack(fill="x", padx=10, pady=(0, 2), after=self.pitch2_frame)
         self._check_pitch_warnings()
         self._update_preview()
 
