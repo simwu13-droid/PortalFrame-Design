@@ -59,8 +59,9 @@ class PortalFrameGeometry:
     """Portal frame parameters — generates a 2D topology.
 
     Supports two roof types:
-      - "gable": symmetric or asymmetric pitched roof with apex at apex_position_pct
-                 of span. Produces 5 nodes, 4 members.
+      - "gable": symmetric or asymmetric pitched roof. Apex position is
+                 derived from roof_pitch (left) and roof_pitch_2 (right).
+                 Produces 5 nodes, 4 members.
       - "mono":  monopitch (lean-to) roof sloping from left eave up to right
                  ridge. Produces 4 nodes, 3 members.
 
@@ -69,56 +70,67 @@ class PortalFrameGeometry:
     """
     span: float           # Clear span (m)
     eave_height: float    # Eave height (m)
-    roof_pitch: float     # Roof pitch (degrees) — defines the LEFT rafter slope
+    roof_pitch: float     # Roof pitch (degrees) — left rafter (alpha1)
     bay_spacing: float    # Bay spacing / tributary width (m) — for load calc
     roof_type: str = "gable"          # "gable" or "mono"
-    apex_position_pct: float = 50.0   # Apex X as % of span (gable only)
+    roof_pitch_2: float | None = None  # Right rafter pitch (alpha2), None = same as roof_pitch
+    # Legacy field — ignored if roof_pitch_2 is set
+    apex_position_pct: float = 50.0
 
     # ------------------------------------------------------------------
     # Derived geometry properties
     # ------------------------------------------------------------------
 
     @property
+    def _effective_pitch_2(self) -> float:
+        """Resolved right-side pitch in degrees."""
+        if self.roof_pitch_2 is not None:
+            return self.roof_pitch_2
+        # Legacy: derive from apex_position_pct if pitch_2 not set
+        if self.apex_position_pct == 50.0:
+            return self.roof_pitch
+        # Backward compat: compute pitch2 from apex_position_pct
+        apex_x = self.span * self.apex_position_pct / 100.0
+        rise = apex_x * math.tan(math.radians(self.roof_pitch))
+        run = self.span - apex_x
+        if run <= 0:
+            return 90.0
+        return math.degrees(math.atan2(rise, run))
+
+    @property
     def apex_x(self) -> float:
         """X coordinate of the apex/ridge node.
 
-        For gable: apex_position_pct % of span.
+        For gable: derived from the two pitches so both slopes meet.
+            apex_x = span * tan(pitch2) / (tan(pitch1) + tan(pitch2))
         For mono:  ridge is at the far (right) end = span.
         """
         if self.roof_type == "mono":
             return self.span
-        return self.span * self.apex_position_pct / 100.0
+        p1 = math.tan(math.radians(self.roof_pitch))
+        p2 = math.tan(math.radians(self._effective_pitch_2))
+        if p1 + p2 == 0:
+            return self.span / 2.0
+        return self.span * p2 / (p1 + p2)
 
     @property
     def ridge_height(self) -> float:
-        """Height of the apex/ridge above ground.
-
-        For gable: eave + apex_x * tan(pitch)  (left rafter defines slope).
-        For mono:  eave + span * tan(pitch).
-        """
+        """Height of the apex/ridge above ground."""
         if self.roof_type == "mono":
             return self.eave_height + self.span * math.tan(math.radians(self.roof_pitch))
         return self.eave_height + self.apex_x * math.tan(math.radians(self.roof_pitch))
 
     @property
     def left_pitch(self) -> float:
-        """Left rafter pitch in degrees. Always equals roof_pitch."""
+        """Left rafter pitch in degrees (alpha1)."""
         return self.roof_pitch
 
     @property
     def right_pitch(self) -> float:
-        """Right rafter pitch in degrees.
-
-        For gable with off-centre apex the right pitch differs from the left.
-        For mono there is only one rafter so this mirrors roof_pitch.
-        """
+        """Right rafter pitch in degrees (alpha2)."""
         if self.roof_type == "mono":
             return self.roof_pitch
-        rise = self.ridge_height - self.eave_height
-        run = self.span - self.apex_x
-        if run == 0.0:
-            return 90.0
-        return math.degrees(math.atan2(rise, run))
+        return self._effective_pitch_2
 
     # ------------------------------------------------------------------
     # Topology builders

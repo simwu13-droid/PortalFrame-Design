@@ -38,12 +38,16 @@ class FramePreview(tk.Canvas):
         span = geom.get("span", 12)
         eave = geom.get("eave_height", 4.5)
         pitch = geom.get("roof_pitch", 5)
+        pitch2 = geom.get("roof_pitch_2", pitch)
         roof_type = geom.get("roof_type", "gable")
-        apex_pct = geom.get("apex_position_pct", 50.0)
+
+        # Use pre-computed values from geometry model if available
+        ridge = geom.get("ridge_height", None)
+        apex_x = geom.get("apex_x", None)
 
         if roof_type == "mono":
-            # Monopitch: single rafter from (0, eave) to (span, ridge)
-            ridge = eave + span * math.tan(math.radians(pitch))
+            if ridge is None:
+                ridge = eave + span * math.tan(math.radians(pitch))
             nodes = {
                 1: (0, 0),
                 2: (0, eave),
@@ -51,9 +55,12 @@ class FramePreview(tk.Canvas):
                 4: (span, 0),
             }
         else:
-            # Gable: apex at apex_pct % of span
-            apex_x = span * apex_pct / 100.0
-            ridge = eave + apex_x * math.tan(math.radians(pitch))
+            if apex_x is None:
+                p1 = math.tan(math.radians(pitch))
+                p2 = math.tan(math.radians(pitch2))
+                apex_x = span * p2 / (p1 + p2) if (p1 + p2) > 0 else span / 2.0
+            if ridge is None:
+                ridge = eave + apex_x * math.tan(math.radians(pitch))
             nodes = {
                 1: (0, 0),
                 2: (0, eave),
@@ -172,10 +179,16 @@ class FramePreview(tk.Canvas):
             rise = ridge - eave
             self.create_text(dx2 + 10, (ns[2][1] + ns[3][1]) / 2, text=f"{rise:.2f} m",
                              fill=dim_col, font=FONT_SMALL, anchor="w")
+            # Left rafter pitch
             mx = (ns[2][0] + ns[3][0]) / 2
             my = (ns[2][1] + ns[3][1]) / 2
-            self.create_text(mx - 15, my - 12, text=f"{pitch:.1f} deg",
+            self.create_text(mx - 15, my - 12, text=f"a1={pitch:.1f}",
                              fill=COLORS["frame_raf"], font=FONT_SMALL, anchor="e")
+            # Right rafter pitch
+            mx2 = (ns[3][0] + ns[4][0]) / 2
+            my2 = (ns[3][1] + ns[4][1]) / 2
+            self.create_text(mx2 + 15, my2 - 12, text=f"a2={pitch2:.1f}",
+                             fill=COLORS["frame_raf"], font=FONT_SMALL, anchor="w")
         else:
             # Pitch label along the single rafter for mono
             mx = (ns[2][0] + ns[3][0]) / 2
@@ -201,21 +214,45 @@ class FramePreview(tk.Canvas):
 
     def _draw_loads(self, loads, ns, scale):
         members = loads.get("members", [])
-        if not members:
-            return
+        point_loads = loads.get("point_loads", [])
 
-        max_w = 0
-        for mem in members:
-            for seg in mem.get("segments", []):
-                max_w = max(max_w, abs(seg.get("w_kn", 0)))
-        if max_w == 0:
-            return
+        if members:
+            max_w = 0
+            for mem in members:
+                for seg in mem.get("segments", []):
+                    max_w = max(max_w, abs(seg.get("w_kn", 0)))
+            if max_w > 0:
+                for mem in members:
+                    n_from = ns[mem["from"]]
+                    n_to = ns[mem["to"]]
+                    for seg in mem.get("segments", []):
+                        self._draw_udl_segment(n_from, n_to, seg, max_w, scale)
 
-        for mem in members:
-            n_from = ns[mem["from"]]
-            n_to = ns[mem["to"]]
-            for seg in mem.get("segments", []):
-                self._draw_udl_segment(n_from, n_to, seg, max_w, scale)
+        for pl in point_loads:
+            nid = pl["node"]
+            if nid not in ns:
+                continue
+            px, py = ns[nid]
+            fx = pl.get("fx", 0)
+            fy = pl.get("fy", 0)
+            label = pl.get("label", "")
+            arrow_len = 50
+            if fx != 0:
+                dx = arrow_len if fx > 0 else -arrow_len
+                self.create_line(px - dx, py, px, py,
+                                 fill=self.ARROW_COLOR, width=2,
+                                 arrow="last", arrowshape=(10, 12, 5))
+                self.create_text(px - dx/2, py - 12,
+                                 text=f"{abs(fx):.2f} kN",
+                                 fill=self.ARROW_COLOR, font=FONT_SMALL)
+            if fy != 0:
+                dy = arrow_len if fy > 0 else -arrow_len
+                self.create_line(px, py + dy, px, py,
+                                 fill=self.ARROW_COLOR, width=2,
+                                 arrow="last", arrowshape=(10, 12, 5))
+                self.create_text(px + 15, py + dy/2,
+                                 text=f"{abs(fy):.2f} kN",
+                                 fill=self.ARROW_COLOR, font=FONT_SMALL)
 
     def _draw_udl_segment(self, n_from, n_to, seg, max_w, scale):
         w_kn = seg.get("w_kn", 0)

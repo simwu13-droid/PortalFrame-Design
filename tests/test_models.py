@@ -102,6 +102,60 @@ class TestVariableApexGable:
         assert geom.right_pitch < geom.left_pitch
 
 
+class TestDualPitchGable:
+    """Tests for gable frames defined by two pitches (alpha1, alpha2)."""
+
+    def test_symmetric_pitches(self):
+        """Equal pitches produce apex at midspan."""
+        geom = PortalFrameGeometry(
+            span=12.0, eave_height=4.5, roof_pitch=5.0, bay_spacing=6.0,
+            roof_pitch_2=5.0,
+        )
+        assert geom.apex_x == pytest.approx(6.0)
+
+    def test_asymmetric_pitches(self):
+        """Different pitches: apex_x = span * tan(p2) / (tan(p1) + tan(p2))."""
+        geom = PortalFrameGeometry(
+            span=20.0, eave_height=6.0, roof_pitch=10.0, bay_spacing=8.0,
+            roof_pitch_2=5.0,
+        )
+        p1 = math.tan(math.radians(10.0))
+        p2 = math.tan(math.radians(5.0))
+        expected_x = 20.0 * p2 / (p1 + p2)
+        assert geom.apex_x == pytest.approx(expected_x, rel=1e-6)
+        # Ridge height consistent
+        expected_ridge = 6.0 + expected_x * math.tan(math.radians(10.0))
+        assert geom.ridge_height == pytest.approx(expected_ridge, rel=1e-6)
+
+    def test_right_pitch_matches_input(self):
+        """right_pitch returns roof_pitch_2 when set."""
+        geom = PortalFrameGeometry(
+            span=12.0, eave_height=4.5, roof_pitch=8.0, bay_spacing=6.0,
+            roof_pitch_2=3.0,
+        )
+        assert geom.left_pitch == pytest.approx(8.0)
+        assert geom.right_pitch == pytest.approx(3.0)
+
+    def test_pitch2_none_defaults_symmetric(self):
+        """roof_pitch_2=None produces symmetric gable (same as pitch1)."""
+        geom = PortalFrameGeometry(
+            span=12.0, eave_height=4.5, roof_pitch=5.0, bay_spacing=6.0,
+        )
+        assert geom.apex_x == pytest.approx(6.0)
+        assert geom.right_pitch == pytest.approx(5.0)
+
+    def test_topology_nodes(self):
+        """Dual pitch produces correct 5-node topology."""
+        geom = PortalFrameGeometry(
+            span=20.0, eave_height=6.0, roof_pitch=10.0, bay_spacing=8.0,
+            roof_pitch_2=5.0,
+        )
+        topo = geom.to_topology()
+        assert len(topo.nodes) == 5
+        assert topo.nodes[3].x == pytest.approx(geom.apex_x, rel=1e-6)
+        assert topo.nodes[3].y == pytest.approx(geom.ridge_height, rel=1e-6)
+
+
 class TestMonoRoofTopology:
     """Tests for monopitch (lean-to) roof frames."""
 

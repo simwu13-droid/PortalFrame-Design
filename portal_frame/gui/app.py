@@ -260,15 +260,15 @@ class PortalFrameApp(tk.Tk):
         self.eave.pack(fill="x", **pad)
         self.eave.bind_change(self._update_preview)
 
-        self.pitch = LabeledEntry(parent, "Roof Pitch", 5.0, "deg")
+        self.pitch = LabeledEntry(parent, "Roof Pitch 1 (a1)", 5.0, "deg")
         self.pitch.pack(fill="x", **pad)
-        self.pitch.bind_change(self._update_preview)
+        self.pitch.bind_change(self._on_pitch_change)
 
-        self.apex_frame = tk.Frame(parent, bg=COLORS["bg_panel"])
-        self.apex_frame.pack(fill="x", **pad)
-        self.apex_position = LabeledEntry(self.apex_frame, "Apex Position", 50.0, "% of span")
-        self.apex_position.pack(fill="x")
-        self.apex_position.bind_change(self._on_apex_change)
+        self.pitch2_frame = tk.Frame(parent, bg=COLORS["bg_panel"])
+        self.pitch2_frame.pack(fill="x", **pad)
+        self.pitch2 = LabeledEntry(self.pitch2_frame, "Roof Pitch 2 (a2)", 5.0, "deg")
+        self.pitch2.pack(fill="x")
+        self.pitch2.bind_change(self._on_pitch_change)
 
         self.pitch_warning_label = tk.Label(
             parent, text="", font=FONT_SMALL, fg=COLORS["warning"],
@@ -367,16 +367,15 @@ class PortalFrameApp(tk.Tk):
 
     def _on_roof_type_change(self, *_):
         if self.roof_type_var.get() == "mono":
-            self.apex_frame.pack_forget()
+            self.pitch2_frame.pack_forget()
             self.pitch_warning_label.pack_forget()
         else:
-            # Show apex frame and warning label
-            self.apex_frame.pack(fill="x", padx=10, pady=(0, 2))
+            self.pitch2_frame.pack(fill="x", padx=10, pady=(0, 2))
             self.pitch_warning_label.pack(fill="x", padx=10, pady=(0, 2))
         self._check_pitch_warnings()
         self._update_preview()
 
-    def _on_apex_change(self, *_):
+    def _on_pitch_change(self, *_):
         self._check_pitch_warnings()
         self._update_preview()
 
@@ -390,13 +389,21 @@ class PortalFrameApp(tk.Tk):
             self.pitch_warning_label.config(text="")
 
     def _build_geometry(self) -> PortalFrameGeometry:
+        if self.roof_type_var.get() == "mono":
+            return PortalFrameGeometry(
+                span=self.span.get(),
+                eave_height=self.eave.get(),
+                roof_pitch=self.pitch.get(),
+                bay_spacing=self.bay.get(),
+                roof_type="mono",
+            )
         return PortalFrameGeometry(
             span=self.span.get(),
             eave_height=self.eave.get(),
             roof_pitch=self.pitch.get(),
             bay_spacing=self.bay.get(),
-            roof_type=self.roof_type_var.get(),
-            apex_position_pct=self.apex_position.get() if self.roof_type_var.get() == "gable" else 50.0,
+            roof_type="gable",
+            roof_pitch_2=self.pitch2.get(),
         )
 
     # ── Wind Tab ──
@@ -663,11 +670,8 @@ class PortalFrameApp(tk.Tk):
     # ── Helpers ──
 
     def _get_h_and_depth(self):
-        eave = self.eave.get()
-        span = self.span.get()
-        pitch = self.pitch.get()
-        ridge = eave + (span / 2) * math.tan(math.radians(pitch)) if pitch else eave
-        h = (eave + ridge) / 2.0
+        geom = self._build_geometry()
+        h = (geom.eave_height + geom.ridge_height) / 2.0
         depth = self.building_depth.get()
         return h, depth
 
@@ -708,7 +712,8 @@ class PortalFrameApp(tk.Tk):
             pitch = self.pitch.get()
             depth = self.building_depth.get()
 
-            split_pct = self.apex_position.get() if self.roof_type_var.get() == "gable" else 50.0
+            geom = self._build_geometry()
+            split_pct = (geom.apex_x / geom.span * 100.0) if geom.span > 0 else 50.0
             cases = generate_standard_wind_cases(
                 span=span, eave_height=eave, roof_pitch=pitch,
                 building_depth=depth, cp=cp, split_pct=split_pct,
@@ -740,12 +745,15 @@ class PortalFrameApp(tk.Tk):
             messagebox.showerror("Wind Generation Error", str(e))
 
     def _update_preview(self, *_):
+        geom_obj = self._build_geometry()
         geom = {
-            "span": self.span.get(),
-            "eave_height": self.eave.get(),
-            "roof_pitch": self.pitch.get(),
-            "roof_type": self.roof_type_var.get(),
-            "apex_position_pct": self.apex_position.get(),
+            "span": geom_obj.span,
+            "eave_height": geom_obj.eave_height,
+            "roof_pitch": geom_obj.roof_pitch,
+            "roof_pitch_2": geom_obj.right_pitch,
+            "roof_type": geom_obj.roof_type,
+            "apex_x": geom_obj.apex_x,
+            "ridge_height": geom_obj.ridge_height,
         }
         supports = (self.left_support.get(), self.right_support.get())
         loads = self._build_preview_loads()
@@ -816,12 +824,12 @@ class PortalFrameApp(tk.Tk):
                 is_negative = "E-" in selected
                 if is_negative:
                     F = -F
-                left_col = (1, 2)
-                right_col = (4, 3) if is_mono else (5, 4)
-                for nf, nt in [left_col, right_col]:
-                    members.append({"from": nf, "to": nt, "segments": [
-                        {"start_pct": 90, "end_pct": 100,
-                         "w_kn": F, "direction": "global_x"}]})
+                # Point loads at eave/knee nodes
+                eave_nodes = [2, 3] if is_mono else [2, 4]
+                point_loads = []
+                for nid in eave_nodes:
+                    point_loads.append({"node": nid, "fx": F, "label": f"E={'−' if is_negative else '+'}"})
+                return {"members": [], "point_loads": point_loads}
             except Exception:
                 pass
 
@@ -851,13 +859,25 @@ class PortalFrameApp(tk.Tk):
                      "direction": "global_x"}]})
 
             if is_mono:
-                # Single rafter for mono roof
-                val = wc.get("left_rafter", 0)
-                if val != 0:
-                    members.append({"from": 2, "to": 3, "segments": [
-                        {"start_pct": 0, "end_pct": 100,
-                         "w_kn": val * bay,
-                         "direction": "normal"}]})
+                # Single rafter for mono roof — handle both crosswind zones and uniform
+                if wc.get("is_crosswind") and wc.get("left_rafter_zones"):
+                    segs = []
+                    for z in wc["left_rafter_zones"]:
+                        if z["pressure"] != 0:
+                            segs.append({
+                                "start_pct": z["start_pct"],
+                                "end_pct": z["end_pct"],
+                                "w_kn": z["pressure"] * bay,
+                                "direction": "normal"})
+                    if segs:
+                        members.append({"from": 2, "to": 3, "segments": segs})
+                else:
+                    val = wc.get("left_rafter", 0)
+                    if val != 0:
+                        members.append({"from": 2, "to": 3, "segments": [
+                            {"start_pct": 0, "end_pct": 100,
+                             "w_kn": val * bay,
+                             "direction": "normal"}]})
             elif wc.get("is_crosswind") and wc.get("left_rafter_zones"):
                 for nf, nt, zone_key in [(2, 3, "left_rafter_zones"),
                                           (3, 4, "right_rafter_zones")]:
@@ -901,12 +921,10 @@ class PortalFrameApp(tk.Tk):
         geom = self._build_geometry()
         roof_label = "Gable" if geom.roof_type == "gable" else "Mono"
         ridge = geom.ridge_height
-        apex_info = ""
-        if geom.roof_type == "gable" and geom.apex_position_pct != 50.0:
-            apex_info = f"  |  Apex: {geom.apex_position_pct:.0f}%"
+        pitch_info = f"a1={geom.left_pitch:.1f} a2={geom.right_pitch:.1f}" if geom.roof_type == "gable" else f"{geom.roof_pitch:.1f} deg"
         self.summary_label.config(
             text=f"{roof_label}  |  Span: {geom.span:.1f}m  |  Eave: {geom.eave_height:.1f}m  |  "
-                 f"Ridge: {ridge:.2f}m  |  Pitch: {geom.roof_pitch:.1f} deg{apex_info}"
+                 f"Ridge: {ridge:.2f}m  |  {pitch_info}"
         )
 
     def _generate(self):
