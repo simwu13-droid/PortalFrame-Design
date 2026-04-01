@@ -16,8 +16,13 @@ class LoadCombination:
     case_number: int      # Output case number (101+, 201+)
 
 
-def build_combinations(wind_case_names: list[str], ws_factor: float = 1.0):
-    """Build full combo list including wind cases per AS/NZS 1170.0:2002.
+def build_combinations(
+    wind_case_names: list[str],
+    ws_factor: float = 1.0,
+    eq_case_names: list[str] | None = None,
+    eq_sls_factor: float = 1.0,
+):
+    """Build full combo list including wind and earthquake cases per AS/NZS 1170.0:2002.
 
     ULS combos are numbered sequentially (ULS-1, ULS-2, ...).
     SLS combos are numbered sequentially (SLS-1, SLS-2, ...) and start
@@ -31,7 +36,16 @@ def build_combinations(wind_case_names: list[str], ws_factor: float = 1.0):
         ws_factor: SLS wind scaling factor (qs/qu). Wind cases store Wu
             pressures; SLS combos scale by this factor to get Ws effect.
             Default 1.0 (conservative -- uses Wu for SLS).
+        eq_case_names: List of earthquake case names (e.g. ["E+", "E-"]).
+            EQ ULS uses G factor = 1.0 (not 1.2); Q drops out (psi_c=0 for
+            roofs). EQ SLS uses eq_sls_factor on the earthquake case.
+            Default None (no earthquake combos).
+        eq_sls_factor: SLS scaling factor applied to earthquake cases.
+            Default 1.0.
     """
+    if eq_case_names is None:
+        eq_case_names = []
+
     uls = []
     uls_n = 1
     # Static ULS combos
@@ -41,6 +55,9 @@ def build_combinations(wind_case_names: list[str], ws_factor: float = 1.0):
     for wname in wind_case_names:
         uls.append((f"ULS-{uls_n}", f"1.2G + {wname}", {"G": 1.2, wname: 1.0})); uls_n += 1
         uls.append((f"ULS-{uls_n}", f"0.9G + {wname}", {"G": 0.9, wname: 1.0})); uls_n += 1
+    # Earthquake ULS combos: 1.0G + E
+    for ename in eq_case_names:
+        uls.append((f"ULS-{uls_n}", f"1.0G + {ename}", {"G": 1.0, ename: 1.0})); uls_n += 1
 
     sls = []
     sls_n = 1
@@ -50,5 +67,8 @@ def build_combinations(wind_case_names: list[str], ws_factor: float = 1.0):
     # Wind SLS combos
     for wname in wind_case_names:
         sls.append((f"SLS-{sls_n}", f"G + {wname}(s)", {"G": 1.0, wname: ws_factor})); sls_n += 1
+    # Earthquake SLS combos: G + E(s)
+    for ename in eq_case_names:
+        sls.append((f"SLS-{sls_n}", f"G + {ename}(s)", {"G": 1.0, ename: eq_sls_factor})); sls_n += 1
 
     return uls, sls

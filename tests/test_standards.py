@@ -175,6 +175,40 @@ class TestGenerateWindCasesWithApex:
             assert a.right_wall == b.right_wall
 
 
+class TestEarthquakeCombinations:
+    def test_eq_uls_combos(self):
+        uls, sls = build_combinations(["W1"], eq_case_names=["E+", "E-"])
+        eq_uls = [c for c in uls if "E+" in c[1] or "E-" in c[1]]
+        assert len(eq_uls) == 2
+
+    def test_eq_sls_combos(self):
+        uls, sls = build_combinations(["W1"], eq_case_names=["E+", "E-"])
+        eq_sls = [c for c in sls if "E+" in c[1] or "E-" in c[1]]
+        assert len(eq_sls) == 2
+
+    def test_eq_uls_factor_on_G(self):
+        uls, sls = build_combinations([], eq_case_names=["E+", "E-"])
+        eq_combo = [c for c in uls if "E+" in c[1]][0]
+        assert eq_combo[2]["G"] == 1.0
+
+    def test_no_eq_when_empty(self):
+        uls, sls = build_combinations(["W1"], eq_case_names=[])
+        for c in uls:
+            assert "E+" not in c[1]
+
+    def test_default_no_eq(self):
+        uls, sls = build_combinations(["W1"])
+        for c in uls:
+            assert "E+" not in c[1]
+
+    def test_eq_combo_numbering(self):
+        uls, sls = build_combinations(["W1", "W2"], eq_case_names=["E+", "E-"])
+        names = [c[0] for c in uls]
+        assert len(names) == 8
+        assert names[-2] == "ULS-7"
+        assert names[-1] == "ULS-8"
+
+
 class TestNZHazardFactors:
     def test_wellington_z(self):
         assert NZ_HAZARD_FACTORS["Wellington"] == 0.40
