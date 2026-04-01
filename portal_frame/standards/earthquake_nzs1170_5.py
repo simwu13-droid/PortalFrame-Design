@@ -231,11 +231,12 @@ def calculate_earthquake_forces(
     Cd_sls = Ch * eq.Z * eq.R_sls * eq.near_fault
 
     # --- Seismic weight (kN) ---
-    # Roof tributary: dead_load_roof * span * bay_spacing
-    # Wall tributary: dead_load_wall * 2 * eave_height * bay_spacing (both walls)
+    # Only mass tributary to knee level (top half of building):
+    # Roof: full roof dead load
+    # Walls: top half of wall cladding on both sides
     Wt = (
         dead_load_roof * geom.span
-        + dead_load_wall * 2.0 * geom.eave_height
+        + dead_load_wall * 2.0 * geom.eave_height / 2.0
     ) * geom.bay_spacing + eq.extra_seismic_mass
 
     # --- Base shear ---

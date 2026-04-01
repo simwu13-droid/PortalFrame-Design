@@ -634,7 +634,11 @@ class PortalFrameApp(tk.Tk):
         self._update_eq_results()
 
     def _estimate_member_self_weight(self, geom) -> float:
-        """Estimate steel member self-weight in kN for one bay frame."""
+        """Estimate steel self-weight tributary to knee level (kN).
+
+        Only the top half of columns and full rafters contribute to
+        the seismic mass lumped at the knee nodes.
+        """
         STEEL_DENSITY = 7850  # kg/m3
         G = 9.81 / 1000  # kN per kg
 
@@ -647,14 +651,14 @@ class PortalFrameApp(tk.Tk):
         if raf_name in self.section_library:
             raf_ax = self.section_library[raf_name].Ax * 1e-6
 
-        # Column lengths (both sides)
-        left_col_len = geom.eave_height
+        # Top half of columns only (bottom half goes to foundation)
+        left_col_len = geom.eave_height / 2.0
         if geom.roof_type == "mono":
-            right_col_len = geom.ridge_height
+            right_col_len = geom.ridge_height / 2.0
         else:
-            right_col_len = geom.eave_height
+            right_col_len = geom.eave_height / 2.0
 
-        # Rafter lengths
+        # Full rafter length
         rise = geom.ridge_height - geom.eave_height
         if geom.roof_type == "mono":
             raf_len = math.hypot(geom.span, rise)

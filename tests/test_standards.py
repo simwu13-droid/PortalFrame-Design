@@ -278,7 +278,7 @@ class TestCalculateEarthquakeForces:
         )
         eq = EarthquakeInputs(Z=0.40, soil_class="C", extra_seismic_mass=10.0)
         result = calculate_earthquake_forces(geom, 0.15, 0.10, eq)
-        expected_Wt = (0.15 * 12.0 + 0.10 * 2 * 6.0) * 8.0 + 10.0
+        expected_Wt = (0.15 * 12.0 + 0.10 * 2 * 6.0 / 2.0) * 8.0 + 10.0
         assert result["Wt"] == pytest.approx(expected_Wt, rel=1e-3)
 
     def test_k_mu_short_period(self):
