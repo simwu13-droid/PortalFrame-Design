@@ -10,22 +10,75 @@ A SpaceGass 2D portal frame generator for Formsteel (NZ structural engineering).
 
 ```bash
 # Run the GUI
-python portal_frame_gui.py
+python -m portal_frame.run_gui
+python portal_frame_gui.py              # backward-compatible wrapper
 
 # CLI usage
-python portal_frame_generator.py --list-sections          # Show available CFS sections
-python portal_frame_generator.py --config my_frame.json   # Generate from config
-python portal_frame_generator.py --example-config          # Write example JSON config
-python portal_frame_generator.py                           # Run with built-in defaults
+python -m portal_frame.cli --list-sections          # Show available CFS sections
+python -m portal_frame.cli --config my_frame.json   # Generate from config
+python -m portal_frame.cli --example-config          # Write example JSON config
+python -m portal_frame.cli                           # Run with built-in defaults
+python portal_frame_generator.py ...                 # backward-compatible wrapper
+
+# Run tests
+python -m pytest tests/ -v
 ```
 
 ## Architecture
 
-Two files, backend + GUI:
+Domain-driven Python package with separated concerns:
 
-- **portal_frame_generator.py** — Core engine. Parses SpaceGass XML section libraries (`.sls`/`.slsc`), builds 2D portal frame geometry (5 nodes, 4 members), applies NZ load combinations, and writes SpaceGass v14 text format (Version 1420). Key classes: `CFS_Section`, `FrameGeometry`, `SupportCondition`, `LoadInput`, `WindCase`, `PortalFrameGenerator`. Key functions: `load_all_sections()`, `build_combinations()`, `build_from_config()`.
+```
+portal_frame/
+  models/          Pure dataclasses — no I/O, no standards logic
+    geometry.py      Node, Member, FrameTopology, PortalFrameGeometry
+    sections.py      CFS_Section
+    loads.py         RafterZoneLoad, WindCase, EarthquakeInputs, LoadInput
+    supports.py      SupportCondition
+  standards/       NZ code calculations — pure functions, no I/O
+    utils.py         lerp() shared interpolation
+    wind_nzs1170_2.py           Wind pressure tables & 8-case generation
+    combinations_nzs1170_0.py   ULS/SLS load combinations + LoadCombination dataclass
+    earthquake_nzs1170_5.py     Placeholder (NZS 1170.5:2004)
+  io/              File I/O — reading and writing
+    section_library.py   XML library parsing (find, parse, load, get)
+    spacegass_writer.py  SpaceGass v14 text output (SpaceGassWriter class)
+    config.py            JSON config parsing (FrameConfig dataclass) + example generation
+  solvers/         Engine-agnostic analysis interface
+    base.py          AnalysisSolver ABC, AnalysisRequest, AnalysisResults
+    spacegass.py     SpaceGassSolver (export-only, analysis done externally)
+  gui/             Tkinter desktop GUI
+    theme.py         COLORS, FONT constants
+    widgets.py       LabeledEntry, LabeledCombo
+    dialogs.py       CrosswindZoneDialog, WindCaseTable
+    preview.py       FramePreview canvas (2D rendering with loads)
+    app.py           PortalFrameApp main window, tab orchestration, generate flow
+    tabs/            (empty — tabs currently built inline in app.py)
+  cli.py           CLI entry point
+  run_gui.py       GUI entry point
+tests/             28 unit tests (standards, models, output integration)
+```
 
-- **portal_frame_gui.py** — tkinter desktop GUI. Chrome-style tab bar on the left panel (3 tabs: Frame, Wind, Combos) + right panel (live canvas preview with dimensions, generate button with save dialog). Imports all backend classes from `portal_frame_generator`.
+**Backward-compatible wrappers** (root level):
+- `portal_frame_generator.py` — re-exports all backend classes/functions, wraps `PortalFrameGenerator` around `SpaceGassWriter`
+- `portal_frame_gui.py` — imports and launches `PortalFrameApp`
+
+### Key Design Patterns
+
+- **FrameTopology** is the universal intermediate representation. Everything downstream (writers, solvers, preview) consumes `FrameTopology`, never `PortalFrameGeometry` directly. A future 3D builder just produces a `FrameTopology`.
+- **AnalysisSolver ABC** with `AnalysisRequest`/`AnalysisResults`. SpaceGass is one solver (export-only). Future integrated solvers (PyNite, OpenSees) implement the same interface.
+- **Library name normalization** (`LIBRARY_SG14_SECTION_FS.slsc` -> `"FS"`) happens at parse time in `io/section_library.py`, stored in `CFS_Section.library_name`.
+- **LoadCombination** dataclass lives in `standards/combinations_nzs1170_0.py` (output of standards logic, not raw input data).
+
+### Adding New Features
+
+| Feature | Where to add |
+|---------|-------------|
+| New load type (earthquake) | `standards/earthquake_nzs1170_5.py` + `models/loads.py` (if new inputs) |
+| New GUI tab | Add name to `tab_names` in `gui/app.py:_build_ui()`, write `_build_X_tab()` method |
+| New solver | `solvers/new_solver.py` implementing `AnalysisSolver` |
+| New output format | `io/new_writer.py` (e.g., DXF, IFC) |
+| New section type | `models/sections.py` |
 
 ## Critical Domain Knowledge
 
@@ -37,7 +90,7 @@ Two files, backend + GUI:
 ### Section Libraries
 - Primary library: `C:\ProgramData\SPACE GASS\Custom Libraries\LIBRARY_SG14_SECTION_FS.slsc` (Formsteel "FS" library)
 - XML format with Groups > Group > Sections > Section > SectionProperties
-- Library name for SECTIONS block is extracted from filename: `LIBRARY_SG14_SECTION_FS.slsc` -> `"FS"`
+- Library name for SECTIONS block is extracted from filename at parse time in `io/section_library.py`
 - Section properties in XML are in mm units; converted to m for SpaceGass output.
 
 ### NZ Loading Standard
@@ -60,7 +113,7 @@ Two files, backend + GUI:
 - Transverse (W5-W8): roof zones vary along BUILDING LENGTH (ridge direction), NOT across the span — 2D frame sees UNIFORM roof pressure (use worst-case zone for conservative envelope)
 - Leeward Cp,e is NOT hardcoded — looked up from Table 5.2(B) by d/b ratio and roof pitch
 - Cp,i differs by envelope: +0.2 (max uplift), -0.3 (max downward) per Table 5.1(A)
-- Key functions: `leeward_cpe_lookup()`, `roof_cpe_zones()`, `_split_zones_to_rafters()`, `generate_standard_wind_cases()`
+- Key functions in `standards/wind_nzs1170_2.py`: `leeward_cpe_lookup()`, `roof_cpe_zones()`, `_split_zones_to_rafters()`, `generate_standard_wind_cases()`
 
 ## Platform Notes
 - Windows environment; use `python` not `python3`
@@ -68,18 +121,6 @@ Two files, backend + GUI:
 - tkinter does not support alpha hex colors (e.g., `#ffffffaa` is invalid; use 6-digit hex only)
 - tkinter `pack()` does not accept `sticky` — that's a `grid()` option. Don't mix layout manager kwargs.
 - SpaceGass can be automated via CLI with the `-s` flag for scripting.
-
-## GUI Tab Structure
-
-The left panel uses a custom Chrome-style tab bar (`_create_tab_page`, `_select_tab`). Three tabs:
-
-| Tab | Method | Contents |
-|-----|--------|----------|
-| Frame | `_build_frame_tab()` | Geometry, Sections, Supports, Dead & Live Loads |
-| Wind | `_build_wind_tab()` | Wind parameters, auto-generate 8 cases, editable wind case table |
-| Combos | `_build_combos_tab()` | Load combination info (read-only display) |
-
-**Adding a new tab**: Add name to `tab_names` list in `_build_ui()`, call `_build_earthquake_tab(self._tab_pages["Earthquake"])`, write the method.
 
 ## Next Feature: Earthquake Loading (NZS 1170.5:2004)
 
@@ -92,21 +133,20 @@ Full plan at: `C:\Users\CadWork4\.claude\plans\indexed-questing-lake.md`
 - Generate a minimal SpaceGass test file with a JOINTLOADS section and have the user open it in SpaceGass v14.25 to confirm the format is accepted
 - Suspected format: `Case,Joint,FX,FY,FZ,MX,MY,MZ` (e.g. `3,2,10.0,0.0,0.0,0.0,0.0,0.0`)
 
-**Step 1 — Backend data & calculations** (`portal_frame_generator.py`):
-- Add `NZ_HAZARD_FACTORS` dict (19 NZ locations → Z values)
+**Step 1 — Backend data & calculations** (`standards/earthquake_nzs1170_5.py`):
+- Add `NZ_HAZARD_FACTORS` dict (19 NZ locations -> Z values)
 - Add `_CH_TABLE` spectral shape factor table (5 soil classes, Table 3.1)
-- Add `spectral_shape_factor(T, soil_class)` using existing `_lerp()`
-- Add `EarthquakeInputs` dataclass (Z, soil_class, R_uls, R_sls, mu, Sp, near_fault, extra_seismic_mass)
-- Add `calculate_earthquake_forces(geom, loads, eq)` → returns T1, Ch, k_mu, Cd_uls, Cd_sls, Wt, V_uls, V_sls, F_node
+- Add `spectral_shape_factor(T, soil_class)` using `standards/utils.py:lerp()`
+- `EarthquakeInputs` dataclass already exists in `models/loads.py`
+- Add `calculate_earthquake_forces(geom, loads, eq)` -> returns T1, Ch, k_mu, Cd_uls, Cd_sls, Wt, V_uls, V_sls, F_node
   - Wt = (SDL_roof * span + SDL_wall * 2 * eave) * bay + extra_seismic_mass (kN)
 
-**Step 2 — Backend integration** (`portal_frame_generator.py`):
-- `LoadInput`: add `earthquake: EarthquakeInputs | None = None`
-- `build_combinations()`: add `eq_case_names` + `es_factor` params; add EQ ULS combos `1.0G + E+/E-` and EQ SLS combos `G + E+(s)/E-(s)`
-- `generate()`: add E+/E- case numbering (after wind cases), write JOINTLOADS section (point loads at eave nodes 2 and 4), pass EQ cases to build_combinations, add EQ titles
+**Step 2 — Backend integration**:
+- `standards/combinations_nzs1170_0.py`: add `eq_case_names` param to `build_combinations()`; add EQ ULS combos `1.0G + E+/E-` and EQ SLS combos `G + E+(s)/E-(s)`
+- `io/spacegass_writer.py`: add E+/E- case numbering (after wind cases), write JOINTLOADS section (point loads at eave nodes), pass EQ cases to build_combinations, add EQ titles
 
-**Step 3 — GUI Earthquake tab** (`portal_frame_gui.py`):
-- Add `"Earthquake"` to `tab_names` list
+**Step 3 — GUI Earthquake tab** (`gui/app.py`):
+- Add `"Earthquake"` to `tab_names` list in `_build_ui()`
 - Add `_build_earthquake_tab(parent)` with:
   - Enable/disable checkbox
   - Location dropdown (auto-fills Z) + editable Z override
@@ -120,13 +160,12 @@ Full plan at: `C:\Users\CadWork4\.claude\plans\indexed-questing-lake.md`
 - `refresh_load_case_list()`: add E+/E- cases to dropdown
 - `_build_preview_loads()`: draw horizontal arrows at eave nodes for EQ cases
 - `_build_combos_tab()`: add earthquake combo info text
-- Imports: add `EarthquakeInputs`, `calculate_earthquake_forces`, `NZ_HAZARD_FACTORS`
 
 ### Key NZS 1170.5:2004 formulas (for reference)
 ```
 V = Cd(T1) * Wt
 Cd(T1) = Ch(T1) * Z * R * N(T,D) * Sp / k_mu
-k_mu: if T1 >= 0.7s → k_mu = mu; if T1 < 0.7s → k_mu = (mu-1)*T1/0.7 + 1
+k_mu: if T1 >= 0.7s -> k_mu = mu; if T1 < 0.7s -> k_mu = (mu-1)*T1/0.7 + 1
 T1 = 1.25 * 0.085 * h_n^0.75  (steel MRF, Clause 4.1.2.1)
 Floor: Cd(T1) >= max(0.03, Z*R*0.02)
 EQ ULS combo factor on G = 1.0 (not 1.2); Q drops out (psi_c=0 for roofs)
@@ -135,8 +174,13 @@ Forces split equally to eave nodes: F_node = V/2
 ```
 
 ## Testing
-- To test GUI launch: run `python portal_frame_gui.py &`, wait a few seconds, then `tasklist | grep python` to confirm the process is alive.
-- SpaceGass output files must be opened in SpaceGass v14.25 to verify — no automated test suite exists.
+- Unit tests: `python -m pytest tests/ -v` (28 tests covering standards, models, output integration)
+- GUI launch test: `python -m portal_frame.run_gui &`, wait a few seconds, then `tasklist | grep python`
+- SpaceGass output files must be opened in SpaceGass v14.25 to verify format correctness.
+- Output verification: generate with both old wrapper and new package, `diff` must show identical output.
+
+## Design Spec
+- Full architecture design: `docs/superpowers/specs/2026-04-01-architecture-restructure-design.md`
 
 ## External References
 - NZ loading standards: `C:\Users\CadWork4\Formsteel\Formsteel Engineers - Documents\Simon\_3.0 NZS & REFERENCE DOCUMENTS\STANDARDS - Loading ASNZS1170\`
