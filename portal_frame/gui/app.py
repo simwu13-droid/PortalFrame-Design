@@ -12,7 +12,10 @@ from portal_frame.gui.dialogs import WindCaseTable
 
 from portal_frame.io.section_library import load_all_sections
 from portal_frame.models.geometry import PortalFrameGeometry
-from portal_frame.models.loads import RafterZoneLoad, WindCase, LoadInput
+from portal_frame.models.loads import RafterZoneLoad, WindCase, LoadInput, EarthquakeInputs
+from portal_frame.standards.earthquake_nzs1170_5 import (
+    NZ_HAZARD_FACTORS, calculate_earthquake_forces,
+)
 from portal_frame.models.supports import SupportCondition
 from portal_frame.standards.wind_nzs1170_2 import WindCpInputs, generate_standard_wind_cases
 from portal_frame.solvers.base import AnalysisRequest
@@ -93,12 +96,13 @@ class PortalFrameApp(tk.Tk):
         self._tab_container = tk.Frame(left_outer, bg=COLORS["bg_panel"])
         self._tab_container.pack(fill="both", expand=True)
 
-        tab_names = ["Frame", "Wind", "Combos"]
+        tab_names = ["Frame", "Wind", "Earthquake", "Combos"]
         for name in tab_names:
             self._create_tab_page(name)
 
         self._build_frame_tab(self._tab_pages["Frame"])
         self._build_wind_tab(self._tab_pages["Wind"])
+        self._build_earthquake_tab(self._tab_pages["Earthquake"])
         self._build_combos_tab(self._tab_pages["Combos"])
 
         self._select_tab("Frame")
@@ -484,6 +488,155 @@ class PortalFrameApp(tk.Tk):
         self.wind_table = WindCaseTable(parent, get_geometry_fn=self._get_h_and_depth)
         self.wind_table.pack(fill="x", padx=10, pady=(0, 8))
 
+    # ── Earthquake Tab ──
+
+    def _build_earthquake_tab(self, parent):
+        pad = {"padx": 10, "pady": (0, 2)}
+
+        self._section_header(parent, "EARTHQUAKE  (NZS 1170.5:2004)")
+
+        self.eq_enabled_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            parent, text="Include earthquake loading",
+            variable=self.eq_enabled_var, font=FONT_BOLD,
+            fg=COLORS["fg"], bg=COLORS["bg_panel"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            activeforeground=COLORS["fg"],
+            command=self._on_eq_toggle,
+        ).pack(fill="x", padx=10, pady=(0, 6))
+
+        self.eq_content = tk.Frame(parent, bg=COLORS["bg_panel"])
+        # Initially hidden — shown on toggle
+
+        self._section_header(self.eq_content, "SEISMIC HAZARD")
+        locations = sorted(NZ_HAZARD_FACTORS.keys())
+        self.eq_location = LabeledCombo(
+            self.eq_content, "Location", values=locations, default="Wellington", width=20,
+        )
+        self.eq_location.pack(fill="x", **pad)
+        self.eq_location.bind_change(self._on_eq_location_change)
+
+        self.eq_Z = LabeledEntry(self.eq_content, "Z (hazard factor)", 0.40, "")
+        self.eq_Z.pack(fill="x", **pad)
+        self.eq_Z.bind_change(self._update_eq_results)
+
+        self.eq_soil = LabeledCombo(
+            self.eq_content, "Soil Class", values=["A", "B", "C", "D", "E"],
+            default="C", width=6,
+        )
+        self.eq_soil.pack(fill="x", **pad)
+        self.eq_soil.bind_change(self._update_eq_results)
+
+        self._section_header(self.eq_content, "DUCTILITY & IMPORTANCE")
+
+        duct_presets = [
+            "Nominally ductile (mu=1.25, Sp=0.925)",
+            "Limited ductile (mu=2.0, Sp=0.7)",
+            "Ductile (mu=4.0, Sp=0.7)",
+            "Elastic (mu=1.0, Sp=1.0)",
+            "Custom",
+        ]
+        self.eq_ductility = LabeledCombo(
+            self.eq_content, "Ductility Preset", values=duct_presets,
+            default=duct_presets[0], width=36,
+        )
+        self.eq_ductility.pack(fill="x", **pad)
+        self.eq_ductility.bind_change(self._on_ductility_change)
+
+        self.eq_mu = LabeledEntry(self.eq_content, "mu (ductility)", 1.25, "")
+        self.eq_mu.pack(fill="x", **pad)
+        self.eq_mu.bind_change(self._update_eq_results)
+
+        self.eq_Sp = LabeledEntry(self.eq_content, "Sp (structural perf.)", 0.925, "")
+        self.eq_Sp.pack(fill="x", **pad)
+        self.eq_Sp.bind_change(self._update_eq_results)
+
+        self.eq_R_uls = LabeledEntry(self.eq_content, "R (ULS return period)", 1.0, "")
+        self.eq_R_uls.pack(fill="x", **pad)
+        self.eq_R_uls.bind_change(self._update_eq_results)
+
+        self.eq_R_sls = LabeledEntry(self.eq_content, "R (SLS return period)", 0.25, "")
+        self.eq_R_sls.pack(fill="x", **pad)
+        self.eq_R_sls.bind_change(self._update_eq_results)
+
+        self.eq_near_fault = LabeledEntry(self.eq_content, "N(T,D) near-fault", 1.0, "")
+        self.eq_near_fault.pack(fill="x", **pad)
+        self.eq_near_fault.bind_change(self._update_eq_results)
+
+        self.eq_extra_mass = LabeledEntry(self.eq_content, "Extra seismic mass", 0.0, "kN")
+        self.eq_extra_mass.pack(fill="x", **pad)
+        self.eq_extra_mass.bind_change(self._update_eq_results)
+
+        self._section_header(self.eq_content, "CALCULATED VALUES")
+
+        self.eq_results_label = tk.Label(
+            self.eq_content, text="(enable earthquake loading to see results)",
+            font=FONT_MONO, fg=COLORS["fg_dim"], bg=COLORS["bg_panel"],
+            anchor="w", justify="left",
+        )
+        self.eq_results_label.pack(fill="x", padx=10, pady=(0, 8))
+
+    def _on_eq_toggle(self, *_):
+        if self.eq_enabled_var.get():
+            self.eq_content.pack(fill="x")
+            self._update_eq_results()
+        else:
+            self.eq_content.pack_forget()
+        self.refresh_load_case_list()
+
+    def _on_eq_location_change(self, *_):
+        loc = self.eq_location.get()
+        if loc in NZ_HAZARD_FACTORS:
+            self.eq_Z.set(NZ_HAZARD_FACTORS[loc])
+        self._update_eq_results()
+
+    def _on_ductility_change(self, *_):
+        preset = self.eq_ductility.get()
+        if "Nominally" in preset:
+            self.eq_mu.set(1.25); self.eq_Sp.set(0.925)
+        elif "Limited" in preset:
+            self.eq_mu.set(2.0); self.eq_Sp.set(0.7)
+        elif preset.startswith("Ductile"):
+            self.eq_mu.set(4.0); self.eq_Sp.set(0.7)
+        elif "Elastic" in preset:
+            self.eq_mu.set(1.0); self.eq_Sp.set(1.0)
+        self._update_eq_results()
+
+    def _update_eq_results(self, *_):
+        if not self.eq_enabled_var.get():
+            return
+        try:
+            geom = self._build_geometry()
+            eq = EarthquakeInputs(
+                Z=self.eq_Z.get(),
+                soil_class=self.eq_soil.get(),
+                R_uls=self.eq_R_uls.get(),
+                R_sls=self.eq_R_sls.get(),
+                mu=self.eq_mu.get(),
+                Sp=self.eq_Sp.get(),
+                near_fault=self.eq_near_fault.get(),
+                extra_seismic_mass=self.eq_extra_mass.get(),
+            )
+            result = calculate_earthquake_forces(
+                geom, self.dead_roof.get(), self.dead_wall.get(), eq,
+            )
+            text = (
+                f"T1 = {result['T1']:.3f} s\n"
+                f"Ch(T1) = {result['Ch']:.3f}\n"
+                f"k_mu = {result['k_mu']:.3f}\n"
+                f"Cd(T1) ULS = {result['Cd_uls']:.4f}\n"
+                f"Cd(T1) SLS = {result['Cd_sls']:.4f}\n"
+                f"Wt = {result['Wt']:.2f} kN\n"
+                f"V_uls = {result['V_uls']:.2f} kN\n"
+                f"V_sls = {result['V_sls']:.2f} kN\n"
+                f"F_node ULS = {result['F_node']:.2f} kN (per knee)\n"
+                f"F_node SLS = {result['F_node_sls']:.2f} kN (per knee)"
+            )
+            self.eq_results_label.config(text=text)
+        except Exception as e:
+            self.eq_results_label.config(text=f"Error: {e}")
+
     # ── Combos Tab ──
 
     def _build_combos_tab(self, parent):
@@ -494,10 +647,14 @@ class PortalFrameApp(tk.Tk):
             "ULS-2: 1.2G + 1.5Q\n"
             "ULS-n: 1.2G + Wu  (per wind case)\n"
             "ULS-n: 0.9G + Wu  (per wind case)\n"
+            "ULS-n: 1.0G + E+  (if EQ enabled)\n"
+            "ULS-n: 1.0G + E-  (if EQ enabled)\n"
             "SLS-1: G + 0.7Q           (201+)\n"
             "SLS-2: G\n"
-            "SLS-n: G + Ws  (per wind case)\n\n"
-            "Table 4.1 roof factors: psi_s=0.7, psi_l=0.0, psi_c=0.0"
+            "SLS-n: G + Ws  (per wind case)\n"
+            "SLS-n: G + E(s)  (if EQ enabled)\n\n"
+            "Table 4.1 roof factors: psi_s=0.7, psi_l=0.0, psi_c=0.0\n"
+            "EQ combo: G factor = 1.0 (not 1.2), Q drops out (psi_c=0)"
         )
         tk.Label(parent, text=combo_text, font=FONT_MONO, fg=COLORS["fg_dim"],
                  bg=COLORS["bg_panel"], anchor="w", justify="left"
@@ -600,6 +757,9 @@ class PortalFrameApp(tk.Tk):
         wc_list = self.wind_table.get_wind_cases()
         for wc in wc_list:
             choices.append(f"{wc['name']} - {wc.get('description', '')}"[:50])
+        if self.eq_enabled_var.get():
+            choices.append("E+ - Earthquake positive")
+            choices.append("E- - Earthquake negative")
         self.load_case_combo["values"] = choices
 
     def _build_preview_loads(self) -> dict:
@@ -638,6 +798,32 @@ class PortalFrameApp(tk.Tk):
                     members.append({"from": nf, "to": nt, "segments": [
                         {"start_pct": 0, "end_pct": 100, "w_kn": w_live,
                          "direction": "global_y"}]})
+
+        elif selected.startswith("E"):
+            try:
+                geom_obj = self._build_geometry()
+                eq = EarthquakeInputs(
+                    Z=self.eq_Z.get(), soil_class=self.eq_soil.get(),
+                    R_uls=self.eq_R_uls.get(), R_sls=self.eq_R_sls.get(),
+                    mu=self.eq_mu.get(), Sp=self.eq_Sp.get(),
+                    near_fault=self.eq_near_fault.get(),
+                    extra_seismic_mass=self.eq_extra_mass.get(),
+                )
+                result = calculate_earthquake_forces(
+                    geom_obj, self.dead_roof.get(), self.dead_wall.get(), eq,
+                )
+                F = result["F_node"]
+                is_negative = "E-" in selected
+                if is_negative:
+                    F = -F
+                left_col = (1, 2)
+                right_col = (4, 3) if is_mono else (5, 4)
+                for nf, nt in [left_col, right_col]:
+                    members.append({"from": nf, "to": nt, "segments": [
+                        {"start_pct": 90, "end_pct": 100,
+                         "w_kn": F, "direction": "global_x"}]})
+            except Exception:
+                pass
 
         else:
             wc_name = selected.split(" - ")[0].strip()
@@ -761,6 +947,19 @@ class PortalFrameApp(tk.Tk):
             qs_val = self.qs.get()
             ws_factor = qs_val / qu_val if qu_val > 0 else 0.75
 
+            earthquake = None
+            if self.eq_enabled_var.get():
+                earthquake = EarthquakeInputs(
+                    Z=self.eq_Z.get(),
+                    soil_class=self.eq_soil.get(),
+                    R_uls=self.eq_R_uls.get(),
+                    R_sls=self.eq_R_sls.get(),
+                    mu=self.eq_mu.get(),
+                    Sp=self.eq_Sp.get(),
+                    near_fault=self.eq_near_fault.get(),
+                    extra_seismic_mass=self.eq_extra_mass.get(),
+                )
+
             loads = LoadInput(
                 dead_load_roof=self.dead_roof.get(),
                 dead_load_wall=self.dead_wall.get(),
@@ -768,6 +967,7 @@ class PortalFrameApp(tk.Tk):
                 wind_cases=wind_cases,
                 include_self_weight=self.self_weight_var.get(),
                 ws_factor=ws_factor,
+                earthquake=earthquake,
             )
 
             topology = geom.to_topology()
