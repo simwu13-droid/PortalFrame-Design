@@ -254,6 +254,7 @@ def generate_standard_wind_cases(
     roof_pitch: float,
     building_depth: float,
     cp: WindCpInputs,
+    split_pct: float = 50.0,
 ) -> list[WindCase]:
     """Generate 8 standard wind cases per NZS 1170.2:2021.
 
@@ -312,7 +313,7 @@ def generate_standard_wind_cases(
         full_zones = _compute_zone_loads(
             span, h, h_over_d, cpi_val, kc_e, kc_i, qu, use_uplift
         )
-        left_zones, right_zones = _split_zones_to_rafters(full_zones, 50.0)
+        left_zones, right_zones = _split_zones_to_rafters(full_zones, split_pct)
 
         if is_LR:
             left_wall, right_wall = ww_p, lw_p

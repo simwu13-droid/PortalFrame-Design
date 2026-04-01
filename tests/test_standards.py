@@ -5,7 +5,7 @@ import pytest
 from portal_frame.standards.utils import lerp
 from portal_frame.standards.wind_nzs1170_2 import (
     cfig, leeward_cpe_lookup, roof_cpe_zones,
-    generate_standard_wind_cases, WindCpInputs,
+    generate_standard_wind_cases, WindCpInputs, _split_zones_to_rafters,
 )
 from portal_frame.standards.combinations_nzs1170_0 import build_combinations
 
@@ -114,3 +114,55 @@ class TestGenerateStandardWindCases:
         for case in cases[4:]:
             assert not case.is_crosswind
             assert case.left_rafter != 0
+
+
+class TestVariableApexWindSplit:
+    def test_split_at_50_matches_default(self):
+        """50% split should match existing behavior."""
+        from portal_frame.models.loads import RafterZoneLoad
+        zones = [
+            RafterZoneLoad(0.0, 50.0, -1.0),
+            RafterZoneLoad(50.0, 100.0, -0.5),
+        ]
+        left, right = _split_zones_to_rafters(zones, 50.0)
+        assert len(left) == 1
+        assert left[0].start_pct == pytest.approx(0.0)
+        assert left[0].end_pct == pytest.approx(100.0)
+        assert left[0].pressure == pytest.approx(-1.0)
+        assert len(right) == 1
+        assert right[0].pressure == pytest.approx(-0.5)
+
+    def test_split_at_33(self):
+        """33% split: left rafter is shorter, gets fewer zones."""
+        from portal_frame.models.loads import RafterZoneLoad
+        zones = [
+            RafterZoneLoad(0.0, 33.3, -1.0),
+            RafterZoneLoad(33.3, 66.7, -0.7),
+            RafterZoneLoad(66.7, 100.0, -0.3),
+        ]
+        left, right = _split_zones_to_rafters(zones, 33.3)
+        assert len(left) == 1
+        assert left[0].start_pct == pytest.approx(0.0)
+        assert left[0].end_pct == pytest.approx(100.0)
+        assert len(right) == 2
+
+
+class TestGenerateWindCasesWithApex:
+    def test_custom_split_pct(self):
+        """generate_standard_wind_cases accepts split_pct parameter."""
+        cp = WindCpInputs()
+        cases = generate_standard_wind_cases(
+            12.0, 4.5, 5.0, 50.0, cp, split_pct=33.0,
+        )
+        assert len(cases) == 8
+        w1 = cases[0]
+        assert w1.is_crosswind
+
+    def test_default_split_is_50(self):
+        """Without split_pct, behavior is unchanged."""
+        cp = WindCpInputs()
+        cases_default = generate_standard_wind_cases(12.0, 4.5, 5.0, 50.0, cp)
+        cases_explicit = generate_standard_wind_cases(12.0, 4.5, 5.0, 50.0, cp, split_pct=50.0)
+        for a, b in zip(cases_default, cases_explicit):
+            assert a.left_wall == b.left_wall
+            assert a.right_wall == b.right_wall
