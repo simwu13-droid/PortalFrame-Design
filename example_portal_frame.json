@@ -1,0 +1,458 @@
+{
+  "geometry": {
+    "span": 12.0,
+    "eave_height": 4.5,
+    "roof_pitch": 5.0,
+    "bay_spacing": 6.0
+  },
+  "sections": {
+    "column": "63020S2",
+    "rafter": "650180295S2"
+  },
+  "supports": {
+    "left_base": "pinned",
+    "right_base": "pinned"
+  },
+  "loads": {
+    "dead_load_roof": 0.15,
+    "dead_load_wall": 0.1,
+    "live_load_roof": 0.25,
+    "include_self_weight": true,
+    "building_depth": 50.0,
+    "wind_cp_inputs": {
+      "qu": 1.2,
+      "qs": 0.9,
+      "kc_e": 0.8,
+      "kc_i": 1.0,
+      "cpi_uplift": 0.2,
+      "cpi_downward": -0.3,
+      "windward_wall_cpe": 0.7
+    },
+    "wind_cases": [
+      {
+        "name": "W1",
+        "description": "Crosswind L-R - max uplift",
+        "direction": "crosswind_LR",
+        "envelope": "max_uplift",
+        "is_crosswind": true,
+        "left_wall": 0.432,
+        "right_wall": -0.72,
+        "left_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 19.8,
+            "pressure": -1.104
+          },
+          {
+            "start_pct": 19.8,
+            "end_pct": 39.7,
+            "pressure": -1.104
+          },
+          {
+            "start_pct": 39.7,
+            "end_pct": 79.4,
+            "pressure": -0.72
+          },
+          {
+            "start_pct": 79.4,
+            "end_pct": 100.0,
+            "pressure": -0.528
+          }
+        ],
+        "right_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 19.8,
+            "pressure": -1.104
+          },
+          {
+            "start_pct": 19.8,
+            "end_pct": 39.7,
+            "pressure": -1.104
+          },
+          {
+            "start_pct": 39.7,
+            "end_pct": 79.4,
+            "pressure": -0.72
+          },
+          {
+            "start_pct": 79.4,
+            "end_pct": 100.0,
+            "pressure": -0.528
+          }
+        ]
+      },
+      {
+        "name": "W2",
+        "description": "Crosswind R-L - max uplift",
+        "direction": "crosswind_RL",
+        "envelope": "max_uplift",
+        "is_crosswind": true,
+        "left_wall": -0.72,
+        "right_wall": 0.432,
+        "left_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 20.6,
+            "pressure": -0.528
+          },
+          {
+            "start_pct": 20.6,
+            "end_pct": 60.3,
+            "pressure": -0.72
+          },
+          {
+            "start_pct": 60.3,
+            "end_pct": 80.2,
+            "pressure": -1.104
+          },
+          {
+            "start_pct": 80.2,
+            "end_pct": 100.0,
+            "pressure": -1.104
+          }
+        ],
+        "right_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 20.6,
+            "pressure": -0.528
+          },
+          {
+            "start_pct": 20.6,
+            "end_pct": 60.3,
+            "pressure": -0.72
+          },
+          {
+            "start_pct": 60.3,
+            "end_pct": 80.2,
+            "pressure": -1.104
+          },
+          {
+            "start_pct": 80.2,
+            "end_pct": 100.0,
+            "pressure": -1.104
+          }
+        ]
+      },
+      {
+        "name": "W3",
+        "description": "Crosswind L-R - max downward",
+        "direction": "crosswind_LR",
+        "envelope": "max_downward",
+        "is_crosswind": true,
+        "left_wall": 1.032,
+        "right_wall": -0.12,
+        "left_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 19.8,
+            "pressure": -0.024
+          },
+          {
+            "start_pct": 19.8,
+            "end_pct": 39.7,
+            "pressure": -0.024
+          },
+          {
+            "start_pct": 39.7,
+            "end_pct": 79.4,
+            "pressure": 0.36
+          },
+          {
+            "start_pct": 79.4,
+            "end_pct": 100.0,
+            "pressure": 0.456
+          }
+        ],
+        "right_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 19.8,
+            "pressure": -0.024
+          },
+          {
+            "start_pct": 19.8,
+            "end_pct": 39.7,
+            "pressure": -0.024
+          },
+          {
+            "start_pct": 39.7,
+            "end_pct": 79.4,
+            "pressure": 0.36
+          },
+          {
+            "start_pct": 79.4,
+            "end_pct": 100.0,
+            "pressure": 0.456
+          }
+        ]
+      },
+      {
+        "name": "W4",
+        "description": "Crosswind R-L - max downward",
+        "direction": "crosswind_RL",
+        "envelope": "max_downward",
+        "is_crosswind": true,
+        "left_wall": -0.12,
+        "right_wall": 1.032,
+        "left_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 20.6,
+            "pressure": 0.456
+          },
+          {
+            "start_pct": 20.6,
+            "end_pct": 60.3,
+            "pressure": 0.36
+          },
+          {
+            "start_pct": 60.3,
+            "end_pct": 80.2,
+            "pressure": -0.024
+          },
+          {
+            "start_pct": 80.2,
+            "end_pct": 100.0,
+            "pressure": -0.024
+          }
+        ],
+        "right_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 20.6,
+            "pressure": 0.456
+          },
+          {
+            "start_pct": 20.6,
+            "end_pct": 60.3,
+            "pressure": 0.36
+          },
+          {
+            "start_pct": 60.3,
+            "end_pct": 80.2,
+            "pressure": -0.024
+          },
+          {
+            "start_pct": 80.2,
+            "end_pct": 100.0,
+            "pressure": -0.024
+          }
+        ]
+      },
+      {
+        "name": "W5",
+        "description": "Transverse - max uplift",
+        "direction": "transverse",
+        "envelope": "max_uplift",
+        "is_crosswind": true,
+        "left_wall": -0.864,
+        "right_wall": -0.864,
+        "left_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 19.8,
+            "pressure": -1.104
+          },
+          {
+            "start_pct": 19.8,
+            "end_pct": 39.7,
+            "pressure": -1.104
+          },
+          {
+            "start_pct": 39.7,
+            "end_pct": 79.4,
+            "pressure": -0.72
+          },
+          {
+            "start_pct": 79.4,
+            "end_pct": 100.0,
+            "pressure": -0.528
+          }
+        ],
+        "right_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 19.8,
+            "pressure": -1.104
+          },
+          {
+            "start_pct": 19.8,
+            "end_pct": 39.7,
+            "pressure": -1.104
+          },
+          {
+            "start_pct": 39.7,
+            "end_pct": 79.4,
+            "pressure": -0.72
+          },
+          {
+            "start_pct": 79.4,
+            "end_pct": 100.0,
+            "pressure": -0.528
+          }
+        ]
+      },
+      {
+        "name": "W6",
+        "description": "Transverse - max downward",
+        "direction": "transverse",
+        "envelope": "max_downward",
+        "is_crosswind": true,
+        "left_wall": -0.264,
+        "right_wall": -0.264,
+        "left_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 19.8,
+            "pressure": -0.024
+          },
+          {
+            "start_pct": 19.8,
+            "end_pct": 39.7,
+            "pressure": -0.024
+          },
+          {
+            "start_pct": 39.7,
+            "end_pct": 79.4,
+            "pressure": 0.36
+          },
+          {
+            "start_pct": 79.4,
+            "end_pct": 100.0,
+            "pressure": 0.456
+          }
+        ],
+        "right_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 19.8,
+            "pressure": -0.024
+          },
+          {
+            "start_pct": 19.8,
+            "end_pct": 39.7,
+            "pressure": -0.024
+          },
+          {
+            "start_pct": 39.7,
+            "end_pct": 79.4,
+            "pressure": 0.36
+          },
+          {
+            "start_pct": 79.4,
+            "end_pct": 100.0,
+            "pressure": 0.456
+          }
+        ]
+      },
+      {
+        "name": "W7",
+        "description": "Transverse (mirrored) - max uplift",
+        "direction": "transverse_mirrored",
+        "envelope": "max_uplift",
+        "is_crosswind": true,
+        "left_wall": -0.864,
+        "right_wall": -0.864,
+        "left_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 20.6,
+            "pressure": -0.528
+          },
+          {
+            "start_pct": 20.6,
+            "end_pct": 60.3,
+            "pressure": -0.72
+          },
+          {
+            "start_pct": 60.3,
+            "end_pct": 80.2,
+            "pressure": -1.104
+          },
+          {
+            "start_pct": 80.2,
+            "end_pct": 100.0,
+            "pressure": -1.104
+          }
+        ],
+        "right_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 20.6,
+            "pressure": -0.528
+          },
+          {
+            "start_pct": 20.6,
+            "end_pct": 60.3,
+            "pressure": -0.72
+          },
+          {
+            "start_pct": 60.3,
+            "end_pct": 80.2,
+            "pressure": -1.104
+          },
+          {
+            "start_pct": 80.2,
+            "end_pct": 100.0,
+            "pressure": -1.104
+          }
+        ]
+      },
+      {
+        "name": "W8",
+        "description": "Transverse (mirrored) - max downward",
+        "direction": "transverse_mirrored",
+        "envelope": "max_downward",
+        "is_crosswind": true,
+        "left_wall": -0.264,
+        "right_wall": -0.264,
+        "left_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 20.6,
+            "pressure": 0.456
+          },
+          {
+            "start_pct": 20.6,
+            "end_pct": 60.3,
+            "pressure": 0.36
+          },
+          {
+            "start_pct": 60.3,
+            "end_pct": 80.2,
+            "pressure": -0.024
+          },
+          {
+            "start_pct": 80.2,
+            "end_pct": 100.0,
+            "pressure": -0.024
+          }
+        ],
+        "right_rafter_zones": [
+          {
+            "start_pct": 0.0,
+            "end_pct": 20.6,
+            "pressure": 0.456
+          },
+          {
+            "start_pct": 20.6,
+            "end_pct": 60.3,
+            "pressure": 0.36
+          },
+          {
+            "start_pct": 60.3,
+            "end_pct": 80.2,
+            "pressure": -0.024
+          },
+          {
+            "start_pct": 80.2,
+            "end_pct": 100.0,
+            "pressure": -0.024
+          }
+        ]
+      }
+    ]
+  }
+}
