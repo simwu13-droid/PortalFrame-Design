@@ -3,6 +3,13 @@
 import pytest
 
 from portal_frame.standards.utils import lerp
+from portal_frame.standards.earthquake_nzs1170_5 import (
+    NZ_HAZARD_FACTORS,
+    spectral_shape_factor,
+    calculate_earthquake_forces,
+)
+from portal_frame.models.loads import EarthquakeInputs
+from portal_frame.models.geometry import PortalFrameGeometry
 from portal_frame.standards.wind_nzs1170_2 import (
     cfig, leeward_cpe_lookup, roof_cpe_zones,
     generate_standard_wind_cases, WindCpInputs, _split_zones_to_rafters,
@@ -166,3 +173,104 @@ class TestGenerateWindCasesWithApex:
         for a, b in zip(cases_default, cases_explicit):
             assert a.left_wall == b.left_wall
             assert a.right_wall == b.right_wall
+
+
+class TestNZHazardFactors:
+    def test_wellington_z(self):
+        assert NZ_HAZARD_FACTORS["Wellington"] == 0.40
+
+    def test_auckland_z(self):
+        assert NZ_HAZARD_FACTORS["Auckland"] == 0.13
+
+    def test_christchurch_z(self):
+        assert NZ_HAZARD_FACTORS["Christchurch"] == 0.30
+
+
+class TestSpectralShapeFactor:
+    def test_soil_c_at_0s(self):
+        ch = spectral_shape_factor(0.0, "C")
+        assert ch == pytest.approx(1.33, rel=0.05)
+
+    def test_soil_c_at_0_5s(self):
+        ch = spectral_shape_factor(0.5, "C")
+        assert ch == pytest.approx(2.36, rel=0.05)
+
+    def test_soil_a_at_0s(self):
+        ch = spectral_shape_factor(0.0, "A")
+        assert ch == pytest.approx(1.89, rel=0.05)
+
+    def test_interpolation(self):
+        ch = spectral_shape_factor(0.25, "C")
+        assert 1.0 < ch < 3.0
+
+    def test_long_period_decay(self):
+        ch_short = spectral_shape_factor(0.3, "C")
+        ch_long = spectral_shape_factor(2.0, "C")
+        assert ch_long < ch_short
+
+
+class TestCalculateEarthquakeForces:
+    def test_basic_portal_frame(self):
+        geom = PortalFrameGeometry(
+            span=12.0, eave_height=6.0, roof_pitch=5.0, bay_spacing=8.0,
+        )
+        eq = EarthquakeInputs(
+            Z=0.40, soil_class="C", R_uls=1.0, R_sls=0.25,
+            mu=1.0, Sp=1.0, near_fault=1.0, extra_seismic_mass=0.0,
+        )
+        result = calculate_earthquake_forces(geom, 0.15, 0.10, eq)
+        assert result["T1"] > 0
+        assert result["Ch"] > 0
+        assert result["k_mu"] == pytest.approx(1.0)
+        assert result["Wt"] > 0
+        assert result["V_uls"] > 0
+        assert result["V_sls"] > 0
+        assert result["V_sls"] < result["V_uls"]
+        assert result["F_node"] == pytest.approx(result["V_uls"] / 2.0)
+
+    def test_period_calculation(self):
+        geom = PortalFrameGeometry(
+            span=12.0, eave_height=6.0, roof_pitch=5.0, bay_spacing=8.0,
+        )
+        eq = EarthquakeInputs(Z=0.40, soil_class="C")
+        result = calculate_earthquake_forces(geom, 0.15, 0.10, eq)
+        h_n = geom.ridge_height
+        expected_T1 = 1.25 * 0.085 * h_n ** 0.75
+        assert result["T1"] == pytest.approx(expected_T1, rel=1e-3)
+
+    def test_seismic_weight(self):
+        geom = PortalFrameGeometry(
+            span=12.0, eave_height=6.0, roof_pitch=5.0, bay_spacing=8.0,
+        )
+        eq = EarthquakeInputs(Z=0.40, soil_class="C", extra_seismic_mass=10.0)
+        result = calculate_earthquake_forces(geom, 0.15, 0.10, eq)
+        expected_Wt = (0.15 * 12.0 + 0.10 * 2 * 6.0) * 8.0 + 10.0
+        assert result["Wt"] == pytest.approx(expected_Wt, rel=1e-3)
+
+    def test_k_mu_short_period(self):
+        geom = PortalFrameGeometry(
+            span=12.0, eave_height=4.0, roof_pitch=5.0, bay_spacing=6.0,
+        )
+        eq = EarthquakeInputs(Z=0.40, soil_class="C", mu=4.0, Sp=0.7)
+        result = calculate_earthquake_forces(geom, 0.15, 0.10, eq)
+        T1 = result["T1"]
+        if T1 < 0.7:
+            expected_k_mu = (4.0 - 1) * T1 / 0.7 + 1
+            assert result["k_mu"] == pytest.approx(expected_k_mu, rel=1e-3)
+
+    def test_cd_floor(self):
+        geom = PortalFrameGeometry(
+            span=12.0, eave_height=6.0, roof_pitch=5.0, bay_spacing=8.0,
+        )
+        eq = EarthquakeInputs(Z=0.40, soil_class="C", R_uls=1.0)
+        result = calculate_earthquake_forces(geom, 0.15, 0.10, eq)
+        cd_floor = max(0.03, 0.40 * 1.0 * 0.02)
+        assert result["Cd_uls"] >= cd_floor
+
+    def test_f_node_sls(self):
+        geom = PortalFrameGeometry(
+            span=12.0, eave_height=6.0, roof_pitch=5.0, bay_spacing=8.0,
+        )
+        eq = EarthquakeInputs(Z=0.40, soil_class="C", R_sls=0.25)
+        result = calculate_earthquake_forces(geom, 0.15, 0.10, eq)
+        assert result["F_node_sls"] == pytest.approx(result["V_sls"] / 2.0)
