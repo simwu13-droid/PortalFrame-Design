@@ -5,6 +5,7 @@ import pytest
 
 from portal_frame.models.geometry import Node, Member, FrameTopology, PortalFrameGeometry
 from portal_frame.models.supports import SupportCondition
+from portal_frame.models.validation import validate_roof_pitch, validate_geometry_pitch
 
 
 class TestPortalFrameGeometry:
@@ -152,3 +153,37 @@ class TestMonoRoofTopology:
         topo = self._geom().to_topology()
         rafters = [m for m in topo.members.values() if m.section_id == 2]
         assert len(rafters) == 1
+
+
+class TestPitchValidation:
+    def test_normal_pitch_no_warnings(self):
+        warnings = validate_roof_pitch(5.0)
+        assert warnings == []
+
+    def test_low_pitch_warning(self):
+        warnings = validate_roof_pitch(2.0)
+        assert len(warnings) == 1
+        assert "ponding" in warnings[0].lower()
+
+    def test_exactly_3deg_no_warning(self):
+        warnings = validate_roof_pitch(3.0)
+        assert warnings == []
+
+    def test_high_pitch_warning(self):
+        warnings = validate_roof_pitch(35.0)
+        assert len(warnings) == 1
+        assert "30" in warnings[0]
+
+    def test_exactly_30deg_no_warning(self):
+        warnings = validate_roof_pitch(30.0)
+        assert warnings == []
+
+    def test_gable_both_pitches_checked(self):
+        """For off-center apex, the shallower side may be below 3 deg."""
+        geom = PortalFrameGeometry(
+            span=20.0, eave_height=6.0, roof_pitch=5.0, bay_spacing=8.0,
+            roof_type="gable", apex_position_pct=20.0,
+        )
+        warnings = validate_geometry_pitch(geom)
+        # Right side pitch: rise over 80% of span — likely < 3 deg
+        assert any("right rafter" in w.lower() or "ponding" in w.lower() for w in warnings)
