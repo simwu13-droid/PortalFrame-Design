@@ -483,6 +483,13 @@ class PortalFrameApp(tk.Tk):
                  font=FONT_SMALL, fg=COLORS["fg_dim"], bg=COLORS["bg_panel"],
                  anchor="w", justify="left").pack(fill="x", pady=(2, 4))
 
+        self.wind_ratios_label = tk.Label(
+            wind_param_frame, text="", font=FONT_MONO,
+            fg=COLORS["fg"], bg=COLORS["bg_panel"],
+            anchor="w", justify="left",
+        )
+        self.wind_ratios_label.pack(fill="x", pady=(0, 4))
+
         tk.Button(
             wind_param_frame, text="  AUTO GENERATE 8 CASES  ", font=FONT_BOLD,
             fg=COLORS["fg_bright"], bg="#2d7d46",
@@ -714,6 +721,16 @@ class PortalFrameApp(tk.Tk):
             depth = self.building_depth.get()
 
             geom = self._build_geometry()
+            h = (geom.eave_height + geom.ridge_height) / 2.0
+            d_over_b = span / depth if depth > 0 else 1.0
+            h_over_d = h / span if span > 0 else 0.5
+            from portal_frame.standards.wind_nzs1170_2 import leeward_cpe_lookup
+            lw_cpe = leeward_cpe_lookup(d_over_b, pitch)
+            self.wind_ratios_label.config(
+                text=f"h={h:.2f}m  d/b={d_over_b:.3f}  h/d={h_over_d:.3f}  "
+                     f"Leeward Cp,e={lw_cpe:.2f}"
+            )
+
             split_pct = (geom.apex_x / geom.span * 100.0) if geom.span > 0 else 50.0
             cases = generate_standard_wind_cases(
                 span=span, eave_height=eave, roof_pitch=pitch,
