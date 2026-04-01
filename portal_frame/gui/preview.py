@@ -173,12 +173,20 @@ class FramePreview(tk.Canvas):
                          fill=dim_col, font=FONT_SMALL, anchor="e")
 
         if roof_type == "gable":
-            # Rise annotation at ridge (node 3)
-            dx2 = ns[3][0]
-            self.create_line(dx2, ns[2][1], dx2, ns[3][1], fill=dim_col, width=1, arrow="both")
-            rise = ridge - eave
-            self.create_text(dx2 + 10, (ns[2][1] + ns[3][1]) / 2, text=f"{rise:.2f} m",
+            # Apex height dimension (vertical, from ground to ridge)
+            dx2 = ns[3][0] + 20
+            self.create_line(dx2, oy, dx2, ns[3][1], fill=dim_col, width=1, arrow="both")
+            self.create_text(dx2 + 5, (oy + ns[3][1]) / 2, text=f"{ridge:.2f} m",
                              fill=dim_col, font=FONT_SMALL, anchor="w")
+
+            # Horizontal distance from left column to apex
+            apex_dim_y = ns[2][1] - 15
+            self.create_line(ns[2][0], apex_dim_y, ns[3][0], apex_dim_y,
+                             fill=dim_col, width=1, arrow="both")
+            self.create_text((ns[2][0] + ns[3][0]) / 2, apex_dim_y - 8,
+                             text=f"{apex_x:.2f} m",
+                             fill=dim_col, font=FONT_SMALL, anchor="s")
+
             # Left rafter pitch
             mx = (ns[2][0] + ns[3][0]) / 2
             my = (ns[2][1] + ns[3][1]) / 2
