@@ -12,6 +12,7 @@ from portal_frame.models.sections import CFS_Section
 from portal_frame.models.loads import LoadInput
 from portal_frame.models.supports import SupportCondition
 from portal_frame.standards.combinations_nzs1170_0 import build_combinations
+from portal_frame.standards.earthquake_nzs1170_5 import calculate_earthquake_forces
 
 
 class SpaceGassWriter:
@@ -49,8 +50,39 @@ class SpaceGassWriter:
         else:  # pinned
             return "FFFFFR"
 
+    def _build_case_map(self) -> dict:
+        """Build case numbering map for all load cases including EQ."""
+        case_map = {"G": 1, "Q": 2}
+        next_case = 3
+        for wc in self.loads.wind_cases:
+            case_map[wc.name] = next_case
+            next_case += 1
+        case_map.update(self._eq_case_map)
+        return case_map
+
     def write(self) -> str:
         """Generate the complete SpaceGass text file."""
+        # Pre-compute earthquake if enabled
+        self._eq_result = None
+        self._eq_case_map = {}
+        if self.loads.earthquake is not None:
+            from types import SimpleNamespace
+            geom_ns = SimpleNamespace(
+                span=self.span,
+                eave_height=self.eave_height,
+                ridge_height=self.ridge_height,
+                bay_spacing=self.bay_spacing,
+            )
+            self._eq_result = calculate_earthquake_forces(
+                geom_ns,
+                self.loads.dead_load_roof,
+                self.loads.dead_load_wall,
+                self.loads.earthquake,
+            )
+            next_case = 3 + len(self.loads.wind_cases)
+            self._eq_case_map["E+"] = next_case
+            self._eq_case_map["E-"] = next_case + 1
+
         parts = [
             self._header(),
             self._headings(),
@@ -61,6 +93,7 @@ class SpaceGassWriter:
             self._materials(),
             self._selfweight(),
             self._load_cases(),
+            self._jointloads(),
             self._combinations(),
             self._titles(),
             "END",
@@ -247,19 +280,46 @@ class SpaceGassWriter:
         lines.append("")
         return "\n".join(lines)
 
+    def _jointloads(self) -> str:
+        """Generate JOINTLOADS section for earthquake forces at eave nodes."""
+        if self._eq_result is None:
+            return ""
+
+        eave_nodes = sorted(self.topology.get_eave_nodes(), key=lambda n: n.x)
+        if len(eave_nodes) < 2:
+            return ""
+
+        F_uls = self._eq_result["F_node"]
+        lines = ["JOINTLOADS"]
+
+        # E+ case: +X force at each eave node
+        cn_pos = self._eq_case_map["E+"]
+        for node in eave_nodes:
+            lines.append(f"{cn_pos},{node.id},{F_uls:.4f},0.0,0.0,0.0,0.0,0.0")
+
+        # E- case: -X force at each eave node
+        cn_neg = self._eq_case_map["E-"]
+        for node in eave_nodes:
+            lines.append(f"{cn_neg},{node.id},{-F_uls:.4f},0.0,0.0,0.0,0.0,0.0")
+
+        lines.append("")
+        return "\n".join(lines)
+
     def _combinations(self) -> str:
         """Generate COMBINATIONS section."""
+        case_map = self._build_case_map()
         wind_case_names = [wc.name for wc in self.loads.wind_cases]
 
-        # Build case numbering map
-        case_map = {"G": 1, "Q": 2}
-        next_case = 3
-        for wc in self.loads.wind_cases:
-            case_map[wc.name] = next_case
-            next_case += 1
+        eq_case_names = list(self._eq_case_map.keys())
+        eq_sls_factor = 1.0
+        if self._eq_result and self._eq_result["Cd_uls"] > 0:
+            eq_sls_factor = self._eq_result["Cd_sls"] / self._eq_result["Cd_uls"]
 
         uls_combos, sls_combos = build_combinations(
-            wind_case_names, ws_factor=self.loads.ws_factor
+            wind_case_names,
+            ws_factor=self.loads.ws_factor,
+            eq_case_names=eq_case_names,
+            eq_sls_factor=eq_sls_factor,
         )
         uls_start = 101
         sls_start = 201
@@ -283,18 +343,18 @@ class SpaceGassWriter:
 
     def _titles(self) -> str:
         """Generate TITLES section."""
-        # Build case numbering map
-        case_map = {"G": 1, "Q": 2}
-        next_case = 3
-        for wc in self.loads.wind_cases:
-            case_map[wc.name] = next_case
-            next_case += 1
+        case_map = self._build_case_map()
 
         lines = ["TITLES"]
         lines.append("1,Dead load (G)")
         lines.append("2,Imposed roof load (Q)")
         for wc in self.loads.wind_cases:
             lines.append(f"{case_map[wc.name]},{wc.name} - {wc.description}")
+        for ename, cn in self._eq_case_map.items():
+            if ename == "E+":
+                lines.append(f"{cn},E+ - Earthquake positive")
+            else:
+                lines.append(f"{cn},E- - Earthquake negative")
         for cname, (combo_num, cdesc) in self._combo_id_map.items():
             lines.append(f"{combo_num},{cname}: {cdesc}")
         lines.append("")

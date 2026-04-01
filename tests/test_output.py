@@ -142,3 +142,62 @@ def test_mono_roof_output():
     assert 1 in dead_members  # left column gets wall dead load
     assert 3 in dead_members  # right column gets wall dead load
     assert 4 not in dead_members  # member 4 doesn't exist in mono
+
+
+def test_earthquake_jointloads_output():
+    """Earthquake loads produce JOINTLOADS section with forces at eave nodes."""
+    from portal_frame.models.loads import EarthquakeInputs
+
+    sections = load_all_sections()
+    col_sec = sections["63020S2"]
+    raf_sec = sections["650180295S2"]
+
+    geom = PortalFrameGeometry(
+        span=12.0, eave_height=6.0, roof_pitch=5.0, bay_spacing=8.0,
+    )
+    topology = geom.to_topology()
+    supports = SupportCondition()
+
+    eq = EarthquakeInputs(Z=0.40, soil_class="C", R_uls=1.0, R_sls=0.25)
+    loads = LoadInput(
+        dead_load_roof=0.15, dead_load_wall=0.10,
+        earthquake=eq,
+    )
+
+    writer = SpaceGassWriter(
+        topology=topology,
+        column_section=col_sec,
+        rafter_section=raf_sec,
+        supports=supports,
+        loads=loads,
+        span=geom.span,
+        eave_height=geom.eave_height,
+        roof_pitch=geom.roof_pitch,
+        bay_spacing=geom.bay_spacing,
+    )
+    output = writer.write()
+
+    assert "JOINTLOADS" in output
+    assert "E+" in output
+    assert "E-" in output
+
+    lines = output.split("\n")
+    jl_lines = []
+    in_jl = False
+    for line in lines:
+        if line == "JOINTLOADS":
+            in_jl = True
+            continue
+        if in_jl and line == "":
+            break
+        if in_jl:
+            jl_lines.append(line)
+    # E+ case: 2 lines (node 2 and node 4), E- case: 2 lines
+    assert len(jl_lines) == 4
+
+
+def test_no_jointloads_without_earthquake():
+    """Without earthquake, no JOINTLOADS section appears."""
+    cfg = create_example_config()
+    output = build_from_config(cfg)
+    assert "JOINTLOADS" not in output
