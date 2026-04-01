@@ -1,7 +1,7 @@
 """Frame topology abstraction — nodes, members, and geometry builders."""
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -56,20 +56,84 @@ class FrameTopology:
 
 @dataclass
 class PortalFrameGeometry:
-    """Portal frame parameters — generates a 5-node/4-member 2D topology."""
+    """Portal frame parameters — generates a 2D topology.
+
+    Supports two roof types:
+      - "gable": symmetric or asymmetric pitched roof with apex at apex_position_pct
+                 of span. Produces 5 nodes, 4 members.
+      - "mono":  monopitch (lean-to) roof sloping from left eave up to right
+                 ridge. Produces 4 nodes, 3 members.
+
+    Defaults produce the same 5-node/4-member symmetric gable as the original
+    implementation, preserving full backward compatibility.
+    """
     span: float           # Clear span (m)
     eave_height: float    # Eave height (m)
-    roof_pitch: float     # Roof pitch (degrees)
+    roof_pitch: float     # Roof pitch (degrees) — defines the LEFT rafter slope
     bay_spacing: float    # Bay spacing / tributary width (m) — for load calc
+    roof_type: str = "gable"          # "gable" or "mono"
+    apex_position_pct: float = 50.0   # Apex X as % of span (gable only)
+
+    # ------------------------------------------------------------------
+    # Derived geometry properties
+    # ------------------------------------------------------------------
+
+    @property
+    def apex_x(self) -> float:
+        """X coordinate of the apex/ridge node.
+
+        For gable: apex_position_pct % of span.
+        For mono:  ridge is at the far (right) end = span.
+        """
+        if self.roof_type == "mono":
+            return self.span
+        return self.span * self.apex_position_pct / 100.0
 
     @property
     def ridge_height(self) -> float:
-        return self.eave_height + (self.span / 2.0) * math.tan(math.radians(self.roof_pitch))
+        """Height of the apex/ridge above ground.
+
+        For gable: eave + apex_x * tan(pitch)  (left rafter defines slope).
+        For mono:  eave + span * tan(pitch).
+        """
+        if self.roof_type == "mono":
+            return self.eave_height + self.span * math.tan(math.radians(self.roof_pitch))
+        return self.eave_height + self.apex_x * math.tan(math.radians(self.roof_pitch))
+
+    @property
+    def left_pitch(self) -> float:
+        """Left rafter pitch in degrees. Always equals roof_pitch."""
+        return self.roof_pitch
+
+    @property
+    def right_pitch(self) -> float:
+        """Right rafter pitch in degrees.
+
+        For gable with off-centre apex the right pitch differs from the left.
+        For mono there is only one rafter so this mirrors roof_pitch.
+        """
+        if self.roof_type == "mono":
+            return self.roof_pitch
+        rise = self.ridge_height - self.eave_height
+        run = self.span - self.apex_x
+        if run == 0.0:
+            return 90.0
+        return math.degrees(math.atan2(rise, run))
+
+    # ------------------------------------------------------------------
+    # Topology builders
+    # ------------------------------------------------------------------
 
     def to_topology(self) -> FrameTopology:
-        """Build the standard 2D portal frame.
+        """Dispatch to the appropriate topology builder."""
+        if self.roof_type == "mono":
+            return self._build_mono_topology()
+        return self._build_gable_topology()
 
-        Node 1 (0,0) -> Node 2 (0,eave) -> Node 3 (span/2,ridge)
+    def _build_gable_topology(self) -> FrameTopology:
+        """Build a gable (pitched) 2D portal frame.
+
+        Node 1 (0,0) -> Node 2 (0,eave) -> Node 3 (apex_x,ridge)
         -> Node 4 (span,eave) -> Node 5 (span,0)
 
         Members: 1(col-L), 2(raft-L), 3(raft-R), 4(col-R)
@@ -79,7 +143,7 @@ class PortalFrameGeometry:
         nodes = {
             1: Node(1, 0.0, 0.0),
             2: Node(2, 0.0, self.eave_height),
-            3: Node(3, self.span / 2.0, ridge),
+            3: Node(3, self.apex_x, ridge),
             4: Node(4, self.span, self.eave_height),
             5: Node(5, self.span, 0.0),
         }
@@ -88,5 +152,27 @@ class PortalFrameGeometry:
             2: Member(2, 2, 3, 2),  # Left rafter
             3: Member(3, 3, 4, 2),  # Right rafter
             4: Member(4, 4, 5, 1),  # Right column
+        }
+        return FrameTopology(nodes=nodes, members=members)
+
+    def _build_mono_topology(self) -> FrameTopology:
+        """Build a monopitch (lean-to) 2D portal frame.
+
+        Node 1 (0,0) -> Node 2 (0,eave) -> Node 3 (span,ridge) -> Node 4 (span,0)
+
+        Members: 1(col-L), 2(rafter), 3(col-R)
+        Section IDs: 1=column, 2=rafter
+        """
+        ridge = self.ridge_height
+        nodes = {
+            1: Node(1, 0.0, 0.0),
+            2: Node(2, 0.0, self.eave_height),
+            3: Node(3, self.span, ridge),
+            4: Node(4, self.span, 0.0),
+        }
+        members = {
+            1: Member(1, 1, 2, 1),  # Left column
+            2: Member(2, 2, 3, 2),  # Rafter (full span)
+            3: Member(3, 3, 4, 1),  # Right column
         }
         return FrameTopology(nodes=nodes, members=members)
