@@ -116,7 +116,7 @@ def create_example_config() -> dict:
     apex_position_pct = 50.0
     cp = WindCpInputs()
     split_pct = apex_position_pct if roof_type == "gable" else 50.0
-    cases = generate_standard_wind_cases(span, eave, pitch, depth, cp, split_pct=split_pct)
+    cases = generate_standard_wind_cases(span, eave, pitch, depth, cp, split_pct=split_pct, roof_type=roof_type)
 
     wind_list = []
     for wc in cases:

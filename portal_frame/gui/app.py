@@ -793,6 +793,7 @@ class PortalFrameApp(tk.Tk):
             cases = generate_standard_wind_cases(
                 span=span, eave_height=eave, roof_pitch=pitch,
                 building_depth=depth, cp=cp, split_pct=split_pct,
+                roof_type=self.roof_type_var.get(),
             )
 
             while self.wind_table.rows:

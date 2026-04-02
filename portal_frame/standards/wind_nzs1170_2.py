@@ -112,6 +112,140 @@ def roof_cpe_zones(h_over_d):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Table 5.3(B) -- Monoslope roof, upwind slope Cp,e (alpha >= 10 deg)
+# ──────────────────────────────────────────────────────────────────────
+
+# Format: {h_over_d: {pitch_deg: (cpe_uplift, cpe_downward)}}
+_TABLE_53B = {
+    0.25: {10: (-0.7, -0.3), 15: (-0.5, 0.0), 20: (-0.3, 0.2), 25: (-0.2, 0.3), 30: (-0.2, 0.4), 35: (0.0, 0.5)},
+    0.50: {10: (-0.9, -0.4), 15: (-0.7, -0.3), 20: (-0.4, 0.0), 25: (-0.3, 0.2), 30: (-0.2, 0.3), 35: (-0.2, 0.4)},
+    1.00: {10: (-1.3, -0.6), 15: (-1.0, -0.5), 20: (-0.7, -0.3), 25: (-0.5, 0.0), 30: (-0.3, 0.2), 35: (-0.2, 0.3)},
+}
+_TABLE_53B_PITCHES = [10, 15, 20, 25, 30, 35]
+_TABLE_53B_HDS = [0.25, 0.50, 1.00]
+
+
+def _interp_53b(h_over_d, alpha):
+    """Table 5.3(B) lookup with bilinear interpolation.
+
+    Returns (cpe_uplift, cpe_downward) for the upwind slope of a monoslope roof.
+    For alpha >= 45 deg, uses Cp,e = 0.8 * sin(alpha).
+    """
+    if alpha >= 45:
+        val = round(0.8 * math.sin(math.radians(alpha)), 3)
+        return (val, val)
+
+    # Clamp h/d
+    hd = max(0.25, min(1.0, h_over_d))
+    alpha = max(10.0, min(35.0, alpha))
+
+    # Find bounding h/d rows
+    hds = _TABLE_53B_HDS
+    if hd <= hds[0]:
+        hd_lo, hd_hi, t_hd = 0, 0, 0.0
+    elif hd >= hds[-1]:
+        hd_lo, hd_hi, t_hd = len(hds) - 1, len(hds) - 1, 0.0
+    else:
+        for i in range(len(hds) - 1):
+            if hds[i] <= hd <= hds[i + 1]:
+                hd_lo, hd_hi = i, i + 1
+                t_hd = (hd - hds[i]) / (hds[i + 1] - hds[i])
+                break
+
+    # Find bounding pitch columns
+    ps = _TABLE_53B_PITCHES
+    if alpha <= ps[0]:
+        p_lo, p_hi, t_p = 0, 0, 0.0
+    elif alpha >= ps[-1]:
+        p_lo, p_hi, t_p = len(ps) - 1, len(ps) - 1, 0.0
+    else:
+        for i in range(len(ps) - 1):
+            if ps[i] <= alpha <= ps[i + 1]:
+                p_lo, p_hi = i, i + 1
+                t_p = (alpha - ps[i]) / (ps[i + 1] - ps[i])
+                break
+
+    # Bilinear interpolation for both uplift and downward
+    result = []
+    for idx in (0, 1):  # 0=uplift, 1=downward
+        v00 = _TABLE_53B[hds[hd_lo]][ps[p_lo]][idx]
+        v01 = _TABLE_53B[hds[hd_lo]][ps[p_hi]][idx]
+        v10 = _TABLE_53B[hds[hd_hi]][ps[p_lo]][idx]
+        v11 = _TABLE_53B[hds[hd_hi]][ps[p_hi]][idx]
+        v0 = v00 + (v01 - v00) * t_p
+        v1 = v10 + (v11 - v10) * t_p
+        result.append(round(v0 + (v1 - v0) * t_hd, 3))
+    return (result[0], result[1])
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Table 5.3(C) -- Monoslope roof, downwind slope Cp,e (alpha >= 10 deg)
+# ──────────────────────────────────────────────────────────────────────
+
+# Format: {h_over_d: {pitch_deg: cpe}}
+_TABLE_53C = {
+    0.25: {10: -0.3, 15: -0.5, 20: -0.6},
+    0.50: {10: -0.5, 15: -0.5, 20: -0.6},
+    1.00: {10: -0.7, 15: -0.6, 20: -0.6},
+}
+_TABLE_53C_PITCHES = [10, 15, 20]
+_TABLE_53C_HDS = [0.25, 0.50, 1.00]
+
+
+def _interp_53c(h_over_d, alpha, b_over_d=None):
+    """Table 5.3(C) lookup with bilinear interpolation.
+
+    Returns cpe (single value, always suction) for the downwind slope.
+    For alpha >= 25 deg, uses b/d dependent formula.
+    """
+    if alpha >= 25:
+        if b_over_d is None:
+            return -0.6
+        if b_over_d <= 3:
+            return -0.6
+        elif b_over_d >= 8:
+            return -0.9
+        else:
+            return round(-0.06 * (7 + b_over_d), 3)
+
+    # Clamp
+    hd = max(0.25, min(1.0, h_over_d))
+    alpha = max(10.0, min(20.0, alpha))
+
+    hds = _TABLE_53C_HDS
+    if hd <= hds[0]:
+        hd_lo, hd_hi, t_hd = 0, 0, 0.0
+    elif hd >= hds[-1]:
+        hd_lo, hd_hi, t_hd = len(hds) - 1, len(hds) - 1, 0.0
+    else:
+        for i in range(len(hds) - 1):
+            if hds[i] <= hd <= hds[i + 1]:
+                hd_lo, hd_hi = i, i + 1
+                t_hd = (hd - hds[i]) / (hds[i + 1] - hds[i])
+                break
+
+    ps = _TABLE_53C_PITCHES
+    if alpha <= ps[0]:
+        p_lo, p_hi, t_p = 0, 0, 0.0
+    elif alpha >= ps[-1]:
+        p_lo, p_hi, t_p = len(ps) - 1, len(ps) - 1, 0.0
+    else:
+        for i in range(len(ps) - 1):
+            if ps[i] <= alpha <= ps[i + 1]:
+                p_lo, p_hi = i, i + 1
+                t_p = (alpha - ps[i]) / (ps[i + 1] - ps[i])
+                break
+
+    v00 = _TABLE_53C[hds[hd_lo]][ps[p_lo]]
+    v01 = _TABLE_53C[hds[hd_lo]][ps[p_hi]]
+    v10 = _TABLE_53C[hds[hd_hi]][ps[p_lo]]
+    v11 = _TABLE_53C[hds[hd_hi]][ps[p_hi]]
+    v0 = v00 + (v01 - v00) * t_p
+    v1 = v10 + (v11 - v10) * t_p
+    return round(v0 + (v1 - v0) * t_hd, 3)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Zone-based rafter load calculations
 # ──────────────────────────────────────────────────────────────────────
 
@@ -255,18 +389,21 @@ def generate_standard_wind_cases(
     building_depth: float,
     cp: WindCpInputs,
     split_pct: float = 50.0,
+    roof_type: str = "gable",
 ) -> list[WindCase]:
     """Generate 8 standard wind cases per NZS 1170.2:2021.
 
-    Cases:
-        W1  Crosswind L-R   max uplift     (theta=0)
-        W2  Crosswind R-L   max uplift     (theta=180)
-        W3  Crosswind L-R   max downward   (theta=0)
-        W4  Crosswind R-L   max downward   (theta=180)
-        W5  Transverse       max uplift     (theta=90)
-        W6  Transverse       max downward   (theta=90)
-        W7  Transverse mir.  max uplift     (theta=270)
-        W8  Transverse mir.  max downward   (theta=270)
+    For gable roofs:
+        W1-W4  Crosswind with zone-based roof pressures (Table 5.3A)
+        W5-W8  Transverse with uniform roof pressures
+
+    For mono roofs (pitch >= 10 deg):
+        W1-W2  Upslope wind (low->high), uplift/downward (Table 5.3B)
+        W3-W4  Downslope wind (high->low), uplift/downward (Table 5.3C)
+        W5-W8  Transverse (same as gable)
+
+    For mono roofs (pitch < 10 deg):
+        Same as gable (roof treated as near-flat per standard)
 
     All pressures are Wu (ULS). SLS uses qs/qu scaling in combinations.
     """
@@ -275,11 +412,16 @@ def generate_standard_wind_cases(
     kc_i = cp.kc_i
 
     # Frame geometry
-    ridge = eave_height + (span / 2.0) * math.tan(math.radians(roof_pitch))
+    if roof_type == "mono":
+        ridge = eave_height + span * math.tan(math.radians(roof_pitch))
+    else:
+        apex_x = span * split_pct / 100.0
+        ridge = eave_height + apex_x * math.tan(math.radians(roof_pitch))
     h = (eave_height + ridge) / 2.0
 
-    # Crosswind (theta=0/180): wind across ridge, in frame plane
+    # Ratios
     d_over_b_cross = span / building_depth if building_depth > 0 else 1.0
+    b_over_d = building_depth / span if span > 0 else 1.0
     h_over_d = h / span if span > 0 else 0.5
 
     # Leeward Cp,e from Table 5.2(B)
@@ -292,50 +434,92 @@ def generate_standard_wind_cases(
         return round(cfig(cp_e, cp_i, kc_e, kc_i) * qu, 4)
 
     cases = []
+    use_mono_tables = (roof_type == "mono" and roof_pitch >= 10.0)
 
     # ================================================================
     # CROSSWIND CASES (W1-W4): wind across the ridge, in frame plane
     # ================================================================
-    for case_num, theta, cpi_val, envelope, desc_env in [
-        (1, 0,   cp.cpi_uplift,   "max_uplift",   "max uplift"),
-        (2, 180, cp.cpi_uplift,   "max_uplift",   "max uplift"),
-        (3, 0,   cp.cpi_downward, "max_downward", "max downward"),
-        (4, 180, cp.cpi_downward, "max_downward", "max downward"),
-    ]:
-        is_LR = (theta == 0)
-        dir_label = "L-R" if is_LR else "R-L"
-        direction = "crosswind_LR" if is_LR else "crosswind_RL"
+    if use_mono_tables:
+        # Mono roof >= 10 deg: Tables 5.3(B) upwind and 5.3(C) downwind
+        # Uniform pressure on single rafter (no zones)
+        cpe_up_uplift, cpe_up_downward = _interp_53b(h_over_d, roof_pitch)
+        cpe_down = _interp_53c(h_over_d, roof_pitch, b_over_d)
 
-        ww_p = wu(cp.windward_wall_cpe, cpi_val)
-        lw_p = wu(lw_cpe, cpi_val)
+        for case_num, is_upslope, cpi_val, envelope, desc_env in [
+            (1, True,  cp.cpi_uplift,   "max_uplift",   "max uplift"),
+            (2, True,  cp.cpi_downward, "max_downward", "max downward"),
+            (3, False, cp.cpi_uplift,   "max_uplift",   "max uplift"),
+            (4, False, cp.cpi_downward, "max_downward", "max downward"),
+        ]:
+            ww_p = wu(cp.windward_wall_cpe, cpi_val)
+            lw_p = wu(lw_cpe, cpi_val)
 
-        use_uplift = (envelope == "max_uplift")
-        full_zones = _compute_zone_loads(
-            span, h, h_over_d, cpi_val, kc_e, kc_i, qu, use_uplift
-        )
-        left_zones, right_zones = _split_zones_to_rafters(full_zones, split_pct)
+            if is_upslope:
+                # Wind from low side (left) going up the slope
+                dir_label = "Upslope"
+                direction = "crosswind_LR"
+                left_wall, right_wall = ww_p, lw_p
+                use_uplift = (envelope == "max_uplift")
+                roof_cpe = cpe_up_uplift if use_uplift else cpe_up_downward
+            else:
+                # Wind from high side (right) going down the slope
+                dir_label = "Downslope"
+                direction = "crosswind_RL"
+                left_wall, right_wall = lw_p, ww_p
+                roof_cpe = cpe_down  # Table 5.3(C) single value
 
-        if is_LR:
-            left_wall, right_wall = ww_p, lw_p
-        else:
-            left_wall, right_wall = lw_p, ww_p
-            left_zones, right_zones = (
-                _mirror_zones(right_zones),
-                _mirror_zones(left_zones),
+            roof_p = wu(roof_cpe, cpi_val)
+
+            cases.append(WindCase(
+                name=f"W{case_num}",
+                description=f"{dir_label} - {desc_env}",
+                direction=direction, envelope=envelope,
+                is_crosswind=False,  # uniform, not zone-based
+                left_wall=left_wall, right_wall=right_wall,
+                left_rafter=roof_p, right_rafter=0.0,
+            ))
+    else:
+        # Gable (or mono < 10 deg): Table 5.3(A) zone-based
+        for case_num, theta, cpi_val, envelope, desc_env in [
+            (1, 0,   cp.cpi_uplift,   "max_uplift",   "max uplift"),
+            (2, 180, cp.cpi_uplift,   "max_uplift",   "max uplift"),
+            (3, 0,   cp.cpi_downward, "max_downward", "max downward"),
+            (4, 180, cp.cpi_downward, "max_downward", "max downward"),
+        ]:
+            is_LR = (theta == 0)
+            dir_label = "L-R" if is_LR else "R-L"
+            direction = "crosswind_LR" if is_LR else "crosswind_RL"
+
+            ww_p = wu(cp.windward_wall_cpe, cpi_val)
+            lw_p = wu(lw_cpe, cpi_val)
+
+            use_uplift = (envelope == "max_uplift")
+            full_zones = _compute_zone_loads(
+                span, h, h_over_d, cpi_val, kc_e, kc_i, qu, use_uplift
             )
+            left_zones, right_zones = _split_zones_to_rafters(full_zones, split_pct)
 
-        cases.append(WindCase(
-            name=f"W{case_num}",
-            description=f"Crosswind {dir_label} - {desc_env}",
-            direction=direction, envelope=envelope,
-            is_crosswind=True,
-            left_wall=left_wall, right_wall=right_wall,
-            left_rafter_zones=left_zones,
-            right_rafter_zones=right_zones,
-        ))
+            if is_LR:
+                left_wall, right_wall = ww_p, lw_p
+            else:
+                left_wall, right_wall = lw_p, ww_p
+                left_zones, right_zones = (
+                    _mirror_zones(right_zones),
+                    _mirror_zones(left_zones),
+                )
+
+            cases.append(WindCase(
+                name=f"W{case_num}",
+                description=f"Crosswind {dir_label} - {desc_env}",
+                direction=direction, envelope=envelope,
+                is_crosswind=True,
+                left_wall=left_wall, right_wall=right_wall,
+                left_rafter_zones=left_zones,
+                right_rafter_zones=right_zones,
+            ))
 
     # ================================================================
-    # TRANSVERSE CASES (W5-W8): wind along ridge, into gable end
+    # TRANSVERSE CASES (W5-W8): wind along ridge
     # ================================================================
     zone_table = roof_cpe_zones(h_over_d)
     worst_cpe_uplift = zone_table[0][2]

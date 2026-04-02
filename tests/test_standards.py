@@ -1,5 +1,6 @@
 """Unit tests for standards modules — proves they're independently importable and testable."""
 
+import math
 import pytest
 
 from portal_frame.standards.utils import lerp
@@ -173,6 +174,114 @@ class TestGenerateWindCasesWithApex:
         for a, b in zip(cases_default, cases_explicit):
             assert a.left_wall == b.left_wall
             assert a.right_wall == b.right_wall
+
+
+class TestMonoRoofWindCases:
+    """Tests for monoslope wind cases using Tables 5.3(B) and 5.3(C)."""
+
+    def test_mono_steep_produces_8_cases(self):
+        """Mono roof >= 10 deg still produces 8 wind cases."""
+        cp = WindCpInputs()
+        cases = generate_standard_wind_cases(
+            12.0, 4.5, 15.0, 50.0, cp, roof_type="mono",
+        )
+        assert len(cases) == 8
+
+    def test_mono_steep_crosswind_uniform(self):
+        """Mono >= 10 deg: W1-W4 crosswind are UNIFORM (not zone-based)."""
+        cp = WindCpInputs()
+        cases = generate_standard_wind_cases(
+            12.0, 4.5, 15.0, 50.0, cp, roof_type="mono",
+        )
+        for case in cases[:4]:
+            assert not case.is_crosswind  # uniform, not zone-based
+            assert case.left_rafter != 0
+
+    def test_mono_steep_upslope_vs_downslope(self):
+        """Upslope (W1-W2) and downslope (W3-W4) use different Cp,e tables."""
+        cp = WindCpInputs()
+        cases = generate_standard_wind_cases(
+            12.0, 4.5, 15.0, 50.0, cp, roof_type="mono",
+        )
+        # W1 = upslope uplift, W3 = downslope uplift
+        w1_rafter = cases[0].left_rafter
+        w3_rafter = cases[2].left_rafter
+        # Different tables → different pressures
+        assert w1_rafter != w3_rafter
+
+    def test_mono_steep_wall_directions(self):
+        """Upslope: left wall = windward. Downslope: right wall = windward."""
+        cp = WindCpInputs()
+        cases = generate_standard_wind_cases(
+            12.0, 4.5, 15.0, 50.0, cp, roof_type="mono",
+        )
+        # W1 upslope: wind from left (low side)
+        assert cases[0].left_wall > 0  # windward = positive pressure
+        # W3 downslope: wind from right (high side)
+        assert cases[2].right_wall > 0  # windward = positive pressure
+
+    def test_mono_shallow_uses_zones(self):
+        """Mono roof < 10 deg falls back to Table 5.3(A) zone-based."""
+        cp = WindCpInputs()
+        cases = generate_standard_wind_cases(
+            12.0, 4.5, 5.0, 50.0, cp, roof_type="mono",
+        )
+        # W1-W4 should be zone-based (same as gable for < 10 deg)
+        for case in cases[:4]:
+            assert case.is_crosswind
+
+    def test_mono_transverse_same_as_gable(self):
+        """W5-W8 transverse cases are the same logic for mono."""
+        cp = WindCpInputs()
+        cases = generate_standard_wind_cases(
+            12.0, 4.5, 15.0, 50.0, cp, roof_type="mono",
+        )
+        for case in cases[4:]:
+            assert not case.is_crosswind
+            assert case.left_rafter != 0
+
+
+class TestTable53BLookup:
+    """Tests for Table 5.3(B) upwind slope interpolation."""
+
+    def test_exact_values(self):
+        """Check exact table values at known points."""
+        from portal_frame.standards.wind_nzs1170_2 import _interp_53b
+        up, dn = _interp_53b(0.5, 15.0)
+        assert up == pytest.approx(-0.7, abs=0.01)
+        assert dn == pytest.approx(-0.3, abs=0.01)
+
+    def test_high_pitch(self):
+        """Alpha >= 45 deg uses 0.8*sin(alpha)."""
+        from portal_frame.standards.wind_nzs1170_2 import _interp_53b
+        up, dn = _interp_53b(0.5, 45.0)
+        expected = 0.8 * math.sin(math.radians(45.0))
+        assert up == pytest.approx(expected, abs=0.01)
+
+
+class TestTable53CLookup:
+    """Tests for Table 5.3(C) downwind slope interpolation."""
+
+    def test_exact_values(self):
+        from portal_frame.standards.wind_nzs1170_2 import _interp_53c
+        assert _interp_53c(0.5, 15.0) == pytest.approx(-0.5, abs=0.01)
+
+    def test_high_pitch_bd_low(self):
+        """Alpha >= 25, b/d <= 3 returns -0.6."""
+        from portal_frame.standards.wind_nzs1170_2 import _interp_53c
+        assert _interp_53c(0.5, 30.0, b_over_d=2.0) == pytest.approx(-0.6)
+
+    def test_high_pitch_bd_high(self):
+        """Alpha >= 25, b/d >= 8 returns -0.9."""
+        from portal_frame.standards.wind_nzs1170_2 import _interp_53c
+        assert _interp_53c(0.5, 30.0, b_over_d=10.0) == pytest.approx(-0.9)
+
+    def test_high_pitch_bd_mid(self):
+        """Alpha >= 25, 3 < b/d < 8 uses formula -0.06*(7+b/d)."""
+        from portal_frame.standards.wind_nzs1170_2 import _interp_53c
+        result = _interp_53c(0.5, 30.0, b_over_d=5.0)
+        expected = -0.06 * (7 + 5.0)
+        assert result == pytest.approx(expected, abs=0.01)
 
 
 class TestEarthquakeCombinations:
