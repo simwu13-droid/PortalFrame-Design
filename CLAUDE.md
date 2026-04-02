@@ -122,46 +122,24 @@ tests/             28 unit tests (standards, models, output integration)
 - tkinter `pack()` does not accept `sticky` — that's a `grid()` option. Don't mix layout manager kwargs.
 - SpaceGass can be automated via CLI with the `-s` flag for scripting.
 
-## Next Feature: Earthquake Loading (NZS 1170.5:2004)
+## Roof Types & Geometry
+- **Gable roof**: Dual pitch inputs (alpha1, alpha2). Apex X derived from pitches: `span * tan(a2) / (tan(a1) + tan(a2))`. 5 nodes, 4 members.
+- **Mono-roof**: Single pitch, no ridge node. 4 nodes, 3 members.
+- Pitch warnings: <3 deg (ponding risk), >30 deg (unusually steep)
+- `roof_pitch_2` field on `PortalFrameGeometry`; legacy `apex_position_pct` still supported for backward compat
 
-**Status: PLANNED — not yet implemented.**
-Full plan at: `C:\Users\CadWork4\.claude\plans\indexed-questing-lake.md`
+## Earthquake Loading (NZS 1170.5:2004)
 
-### What needs to be built
+**Status: IMPLEMENTED** — equivalent static method, forces lumped at knee nodes.
 
-**Step 0 — JOINTLOADS format verification (do this first)**
-- Generate a minimal SpaceGass test file with a JOINTLOADS section and have the user open it in SpaceGass v14.25 to confirm the format is accepted
-- Suspected format: `Case,Joint,FX,FY,FZ,MX,MY,MZ` (e.g. `3,2,10.0,0.0,0.0,0.0,0.0,0.0`)
+### Implementation
+- `standards/earthquake_nzs1170_5.py`: `NZ_HAZARD_FACTORS` (19 locations), `_CH_TABLE` (5 soil classes), `spectral_shape_factor()`, `calculate_earthquake_forces()`
+- `standards/combinations_nzs1170_0.py`: `eq_case_names` param on `build_combinations()` adds `1.0G + E+/E-` (ULS) and `G + E(s)` (SLS)
+- `io/spacegass_writer.py`: NODELOADS section with `Case,Node,FX,FY,FZ,MX,MY,MZ,LoadCategory` (9 columns, verified in SpaceGass v14.25)
+- GUI Earthquake tab: enable/disable, location dropdown (auto-fills Z), soil class, ductility presets, live calculated values
+- Seismic weight (Wt): top-half tributary only (full roof SDL + half wall SDL + half column SW + full rafter SW + extra mass)
 
-**Step 1 — Backend data & calculations** (`standards/earthquake_nzs1170_5.py`):
-- Add `NZ_HAZARD_FACTORS` dict (19 NZ locations -> Z values)
-- Add `_CH_TABLE` spectral shape factor table (5 soil classes, Table 3.1)
-- Add `spectral_shape_factor(T, soil_class)` using `standards/utils.py:lerp()`
-- `EarthquakeInputs` dataclass already exists in `models/loads.py`
-- Add `calculate_earthquake_forces(geom, loads, eq)` -> returns T1, Ch, k_mu, Cd_uls, Cd_sls, Wt, V_uls, V_sls, F_node
-  - Wt = (SDL_roof * span + SDL_wall * 2 * eave) * bay + extra_seismic_mass (kN)
-
-**Step 2 — Backend integration**:
-- `standards/combinations_nzs1170_0.py`: add `eq_case_names` param to `build_combinations()`; add EQ ULS combos `1.0G + E+/E-` and EQ SLS combos `G + E+(s)/E-(s)`
-- `io/spacegass_writer.py`: add E+/E- case numbering (after wind cases), write JOINTLOADS section (point loads at eave nodes), pass EQ cases to build_combinations, add EQ titles
-
-**Step 3 — GUI Earthquake tab** (`gui/app.py`):
-- Add `"Earthquake"` to `tab_names` list in `_build_ui()`
-- Add `_build_earthquake_tab(parent)` with:
-  - Enable/disable checkbox
-  - Location dropdown (auto-fills Z) + editable Z override
-  - Soil class dropdown (A/B/C/D/E)
-  - Ductility preset dropdown (fills mu & Sp) + individual overrides
-  - R_uls, R_sls editable fields
-  - Near-fault N(T,D) field
-  - Extra seismic mass (kN) field
-  - Read-only calculated values: T1, Ch(T1), k_mu, Cd_uls, Cd_sls, Wt, V_uls, V_sls, F_node
-- `_generate()`: collect earthquake inputs, create `EarthquakeInputs`, pass to `LoadInput`
-- `refresh_load_case_list()`: add E+/E- cases to dropdown
-- `_build_preview_loads()`: draw horizontal arrows at eave nodes for EQ cases
-- `_build_combos_tab()`: add earthquake combo info text
-
-### Key NZS 1170.5:2004 formulas (for reference)
+### Key NZS 1170.5:2004 formulas
 ```
 V = Cd(T1) * Wt
 Cd(T1) = Ch(T1) * Z * R * N(T,D) * Sp / k_mu
@@ -173,8 +151,13 @@ SLS: Cd_sls = Ch(T1) * Z * R_sls * N (no Sp or k_mu reduction)
 Forces split equally to eave nodes: F_node = V/2
 ```
 
+### SpaceGass Node Loads Format
+- Keyword: `NODELOADS` (NOT `JOINTLOADS`)
+- 9 columns: `Case,Node,FX,FY,FZ,MX,MY,MZ,LoadCategory`
+- LoadCategory is an integer (e.g. `1`), NOT empty
+
 ## Testing
-- Unit tests: `python -m pytest tests/ -v` (28 tests covering standards, models, output integration)
+- Unit tests: `python -m pytest tests/ -v` (78 tests covering standards, models, output integration)
 - GUI launch test: `python -m portal_frame.run_gui &`, wait a few seconds, then `tasklist | grep python`
 - SpaceGass output files must be opened in SpaceGass v14.25 to verify format correctness.
 - Output verification: generate with both old wrapper and new package, `diff` must show identical output.
