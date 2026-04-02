@@ -177,7 +177,7 @@ def test_earthquake_jointloads_output():
     )
     output = writer.write()
 
-    assert "JOINTLOADS" in output
+    assert "NODELOADS" in output
     assert "E+" in output
     assert "E-" in output
 
@@ -185,7 +185,7 @@ def test_earthquake_jointloads_output():
     jl_lines = []
     in_jl = False
     for line in lines:
-        if line == "JOINTLOADS":
+        if line == "NODELOADS":
             in_jl = True
             continue
         if in_jl and line == "":
@@ -200,4 +200,4 @@ def test_no_jointloads_without_earthquake():
     """Without earthquake, no JOINTLOADS section appears."""
     cfg = create_example_config()
     output = build_from_config(cfg)
-    assert "JOINTLOADS" not in output
+    assert "NODELOADS" not in output
