@@ -803,12 +803,20 @@ class PortalFrameApp(tk.Tk):
 
             for wc in cases:
                 if wc.is_crosswind and (wc.left_rafter_zones or wc.right_rafter_zones):
+                    # If a rafter has uniform pressure instead of zones,
+                    # convert to a single full-span zone for the table
+                    left_z = list(wc.left_rafter_zones)
+                    right_z = list(wc.right_rafter_zones)
+                    if not left_z and wc.left_rafter != 0:
+                        left_z = [RafterZoneLoad(0.0, 100.0, wc.left_rafter)]
+                    if not right_z and wc.right_rafter != 0:
+                        right_z = [RafterZoneLoad(0.0, 100.0, wc.right_rafter)]
                     self.wind_table.add_crosswind_row(
                         name=wc.name, desc=wc.description,
                         left_wall=str(wc.left_wall),
                         right_wall=str(wc.right_wall),
-                        zones=wc.left_rafter_zones,
-                        right_zones=wc.right_rafter_zones,
+                        zones=left_z,
+                        right_zones=right_z,
                     )
                 else:
                     self.wind_table.add_row([
