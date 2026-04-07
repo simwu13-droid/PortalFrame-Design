@@ -382,39 +382,6 @@ class WindCpInputs:
 # Standard 8-case wind generation
 # ──────────────────────────────────────────────────────────────────────
 
-def _rafter_pressure(
-    pitch, role, h_over_d, b_over_d, cpi_val, kc_e, kc_i, qu, use_uplift,
-    full_zones, split_pct, is_left,
-):
-    """Determine pressure for one rafter based on its pitch and role.
-
-    Args:
-        pitch: This rafter's pitch in degrees.
-        role: "upwind" or "downwind".
-        full_zones: Pre-computed Table 5.3(A) zones for the full span.
-        split_pct: Ridge position as % of span.
-        is_left: True for left rafter, False for right.
-
-    Returns:
-        (zones, uniform): zones is a list of RafterZoneLoad (may be empty),
-        uniform is a float (may be 0.0). One or the other will be populated.
-    """
-    if pitch >= 10.0:
-        # Use Table 5.3(B) or 5.3(C) — uniform pressure
-        if role == "upwind":
-            cpe_up, cpe_dn = _interp_53b(h_over_d, pitch)
-            cpe = cpe_up if use_uplift else cpe_dn
-        else:
-            cpe = _interp_53c(h_over_d, pitch, b_over_d)
-        wu_val = round(cfig(cpe, cpi_val, kc_e, kc_i) * qu, 4)
-        return [], wu_val
-    else:
-        # Use Table 5.3(A) — zone-based, split at ridge
-        left_zones, right_zones = _split_zones_to_rafters(full_zones, split_pct)
-        zones = left_zones if is_left else right_zones
-        return zones, 0.0
-
-
 def generate_standard_wind_cases(
     span: float,
     eave_height: float,
@@ -540,7 +507,8 @@ def generate_standard_wind_cases(
             ))
 
     else:
-        # Gable: each rafter handled independently by its pitch
+        # Gable: compute zones first (correct for wind direction),
+        # then override individual rafters with uniform if pitch >= 10 deg
         for case_num, theta, cpi_val, envelope, desc_env in [
             (1, 0,   cp.cpi_uplift,   "max_uplift",   "max uplift"),
             (2, 180, cp.cpi_uplift,   "max_uplift",   "max uplift"),
@@ -554,45 +522,48 @@ def generate_standard_wind_cases(
             lw_p = wu(lw_cpe, cpi_val)
             use_uplift = (envelope == "max_uplift")
 
-            # Pre-compute full-span zones (for any rafter that needs 5.3A)
+            # Step 1: Compute zone-based loads for the full span (as if L-R)
             full_zones = _compute_zone_loads(
                 span, h, h_over_d, cpi_val, kc_e, kc_i, qu, use_uplift
             )
+            l_zones, r_zones = _split_zones_to_rafters(full_zones, split_pct)
 
-            # Assign upwind/downwind roles based on wind direction
+            # Step 2: For R-L wind, swap and mirror (windward edge is right)
+            if not is_LR:
+                l_zones, r_zones = _mirror_zones(r_zones), _mirror_zones(l_zones)
+
+            # Step 3: Override with uniform if pitch >= 10 deg
+            l_uniform = 0.0
+            r_uniform = 0.0
             if is_LR:
                 left_role, right_role = "upwind", "downwind"
             else:
                 left_role, right_role = "downwind", "upwind"
 
-            l_zones, l_uniform = _rafter_pressure(
-                left_pitch, left_role, h_over_d, b_over_d,
-                cpi_val, kc_e, kc_i, qu, use_uplift,
-                full_zones, split_pct, is_left=True,
-            )
-            r_zones, r_uniform = _rafter_pressure(
-                right_pitch, right_role, h_over_d, b_over_d,
-                cpi_val, kc_e, kc_i, qu, use_uplift,
-                full_zones, split_pct, is_left=False,
-            )
+            if left_pitch >= 10.0:
+                if left_role == "upwind":
+                    cpe_up, cpe_dn = _interp_53b(h_over_d, left_pitch)
+                    cpe = cpe_up if use_uplift else cpe_dn
+                else:
+                    cpe = _interp_53c(h_over_d, left_pitch, b_over_d)
+                l_uniform = wu(cpe, cpi_val)
+                l_zones = []  # uniform replaces zones
 
-            # For R-L wind, mirror the zone-based rafters
-            if not is_LR:
-                if l_zones and r_zones:
-                    l_zones, r_zones = _mirror_zones(r_zones), _mirror_zones(l_zones)
-                elif l_zones:
-                    l_zones = _mirror_zones(l_zones)
-                elif r_zones:
-                    r_zones = _mirror_zones(r_zones)
+            if right_pitch >= 10.0:
+                if right_role == "upwind":
+                    cpe_up, cpe_dn = _interp_53b(h_over_d, right_pitch)
+                    cpe = cpe_up if use_uplift else cpe_dn
+                else:
+                    cpe = _interp_53c(h_over_d, right_pitch, b_over_d)
+                r_uniform = wu(cpe, cpi_val)
+                r_zones = []  # uniform replaces zones
 
             if is_LR:
                 left_wall, right_wall = ww_p, lw_p
             else:
                 left_wall, right_wall = lw_p, ww_p
 
-            # is_crosswind=True if ANY rafter uses zones
             has_zones = bool(l_zones or r_zones)
-
             cases.append(WindCase(
                 name=f"W{case_num}",
                 description=f"Crosswind {dir_label} - {desc_env}",
