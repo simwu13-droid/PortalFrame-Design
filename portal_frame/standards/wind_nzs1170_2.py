@@ -522,15 +522,18 @@ def generate_standard_wind_cases(
             lw_p = wu(lw_cpe, cpi_val)
             use_uplift = (envelope == "max_uplift")
 
-            # Step 1: Compute zone-based loads for the full span (as if L-R)
+            # Step 1: Compute zone-based loads for the full span
+            # Zones are measured from the windward edge in multiples of h.
+            # For L-R: windward = left edge, split directly.
+            # For R-L: windward = right edge, mirror full zones first then split.
             full_zones = _compute_zone_loads(
                 span, h, h_over_d, cpi_val, kc_e, kc_i, qu, use_uplift
             )
-            l_zones, r_zones = _split_zones_to_rafters(full_zones, split_pct)
-
-            # Step 2: For R-L wind, swap and mirror (windward edge is right)
-            if not is_LR:
-                l_zones, r_zones = _mirror_zones(r_zones), _mirror_zones(l_zones)
+            if is_LR:
+                l_zones, r_zones = _split_zones_to_rafters(full_zones, split_pct)
+            else:
+                mirrored_full = _mirror_zones(full_zones)
+                l_zones, r_zones = _split_zones_to_rafters(mirrored_full, split_pct)
 
             # Step 3: Override with uniform if pitch >= 10 deg
             l_uniform = 0.0
