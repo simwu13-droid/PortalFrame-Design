@@ -478,8 +478,44 @@ def generate_standard_wind_cases(
                 left_wall=left_wall, right_wall=right_wall,
                 left_rafter=roof_p, right_rafter=0.0,
             ))
+    elif roof_type == "mono":
+        # Mono < 10 deg: Table 5.3(A) zone-based, but single rafter (no split)
+        for case_num, theta, cpi_val, envelope, desc_env in [
+            (1, 0,   cp.cpi_uplift,   "max_uplift",   "max uplift"),
+            (2, 180, cp.cpi_uplift,   "max_uplift",   "max uplift"),
+            (3, 0,   cp.cpi_downward, "max_downward", "max downward"),
+            (4, 180, cp.cpi_downward, "max_downward", "max downward"),
+        ]:
+            is_LR = (theta == 0)
+            dir_label = "L-R" if is_LR else "R-L"
+            direction = "crosswind_LR" if is_LR else "crosswind_RL"
+
+            ww_p = wu(cp.windward_wall_cpe, cpi_val)
+            lw_p = wu(lw_cpe, cpi_val)
+
+            use_uplift = (envelope == "max_uplift")
+            full_zones = _compute_zone_loads(
+                span, h, h_over_d, cpi_val, kc_e, kc_i, qu, use_uplift
+            )
+            # Mono: single rafter gets the full-span zones (no split)
+            rafter_zones = full_zones if is_LR else _mirror_zones(full_zones)
+
+            if is_LR:
+                left_wall, right_wall = ww_p, lw_p
+            else:
+                left_wall, right_wall = lw_p, ww_p
+
+            cases.append(WindCase(
+                name=f"W{case_num}",
+                description=f"Crosswind {dir_label} - {desc_env}",
+                direction=direction, envelope=envelope,
+                is_crosswind=True,
+                left_wall=left_wall, right_wall=right_wall,
+                left_rafter_zones=rafter_zones,
+                right_rafter_zones=[],
+            ))
     else:
-        # Gable (or mono < 10 deg): Table 5.3(A) zone-based
+        # Gable: Table 5.3(A) zone-based, split at ridge
         for case_num, theta, cpi_val, envelope, desc_env in [
             (1, 0,   cp.cpi_uplift,   "max_uplift",   "max uplift"),
             (2, 180, cp.cpi_uplift,   "max_uplift",   "max uplift"),
