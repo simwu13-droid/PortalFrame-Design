@@ -790,10 +790,12 @@ class PortalFrameApp(tk.Tk):
             )
 
             split_pct = (geom.apex_x / geom.span * 100.0) if geom.span > 0 else 50.0
+            pitch_2 = geom.right_pitch if geom.roof_type == "gable" else None
             cases = generate_standard_wind_cases(
                 span=span, eave_height=eave, roof_pitch=pitch,
                 building_depth=depth, cp=cp, split_pct=split_pct,
                 roof_type=self.roof_type_var.get(),
+                roof_pitch_2=pitch_2,
             )
 
             while self.wind_table.rows:
@@ -955,28 +957,31 @@ class PortalFrameApp(tk.Tk):
                             {"start_pct": 0, "end_pct": 100,
                              "w_kn": val * bay,
                              "direction": "normal"}]})
-            elif wc.get("is_crosswind") and wc.get("left_rafter_zones"):
-                for nf, nt, zone_key in [(2, 3, "left_rafter_zones"),
-                                          (3, 4, "right_rafter_zones")]:
-                    segs = []
-                    for z in wc.get(zone_key, []):
-                        if z["pressure"] != 0:
-                            segs.append({
-                                "start_pct": z["start_pct"],
-                                "end_pct": z["end_pct"],
-                                "w_kn": z["pressure"] * bay,
-                                "direction": "normal"})
-                    if segs:
-                        members.append({"from": nf, "to": nt, "segments": segs})
             else:
-                for nf, nt, key in [(2, 3, "left_rafter"),
-                                     (3, 4, "right_rafter")]:
-                    val = wc.get(key, 0)
-                    if val != 0:
-                        members.append({"from": nf, "to": nt, "segments": [
-                            {"start_pct": 0, "end_pct": 100,
-                             "w_kn": val * bay,
-                             "direction": "normal"}]})
+                # Gable: each rafter may have zones OR uniform independently
+                for nf, nt, zone_key, uni_key in [
+                    (2, 3, "left_rafter_zones", "left_rafter"),
+                    (3, 4, "right_rafter_zones", "right_rafter"),
+                ]:
+                    zones = wc.get(zone_key, [])
+                    if zones:
+                        segs = []
+                        for z in zones:
+                            if z["pressure"] != 0:
+                                segs.append({
+                                    "start_pct": z["start_pct"],
+                                    "end_pct": z["end_pct"],
+                                    "w_kn": z["pressure"] * bay,
+                                    "direction": "normal"})
+                        if segs:
+                            members.append({"from": nf, "to": nt, "segments": segs})
+                    else:
+                        val = wc.get(uni_key, 0)
+                        if val != 0:
+                            members.append({"from": nf, "to": nt, "segments": [
+                                {"start_pct": 0, "end_pct": 100,
+                                 "w_kn": val * bay,
+                                 "direction": "normal"}]})
 
         if not members:
             return None

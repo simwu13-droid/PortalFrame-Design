@@ -382,6 +382,39 @@ class WindCpInputs:
 # Standard 8-case wind generation
 # ──────────────────────────────────────────────────────────────────────
 
+def _rafter_pressure(
+    pitch, role, h_over_d, b_over_d, cpi_val, kc_e, kc_i, qu, use_uplift,
+    full_zones, split_pct, is_left,
+):
+    """Determine pressure for one rafter based on its pitch and role.
+
+    Args:
+        pitch: This rafter's pitch in degrees.
+        role: "upwind" or "downwind".
+        full_zones: Pre-computed Table 5.3(A) zones for the full span.
+        split_pct: Ridge position as % of span.
+        is_left: True for left rafter, False for right.
+
+    Returns:
+        (zones, uniform): zones is a list of RafterZoneLoad (may be empty),
+        uniform is a float (may be 0.0). One or the other will be populated.
+    """
+    if pitch >= 10.0:
+        # Use Table 5.3(B) or 5.3(C) — uniform pressure
+        if role == "upwind":
+            cpe_up, cpe_dn = _interp_53b(h_over_d, pitch)
+            cpe = cpe_up if use_uplift else cpe_dn
+        else:
+            cpe = _interp_53c(h_over_d, pitch, b_over_d)
+        wu_val = round(cfig(cpe, cpi_val, kc_e, kc_i) * qu, 4)
+        return [], wu_val
+    else:
+        # Use Table 5.3(A) — zone-based, split at ridge
+        left_zones, right_zones = _split_zones_to_rafters(full_zones, split_pct)
+        zones = left_zones if is_left else right_zones
+        return zones, 0.0
+
+
 def generate_standard_wind_cases(
     span: float,
     eave_height: float,
@@ -390,26 +423,27 @@ def generate_standard_wind_cases(
     cp: WindCpInputs,
     split_pct: float = 50.0,
     roof_type: str = "gable",
+    roof_pitch_2: float | None = None,
 ) -> list[WindCase]:
     """Generate 8 standard wind cases per NZS 1170.2:2021.
 
-    For gable roofs:
-        W1-W4  Crosswind with zone-based roof pressures (Table 5.3A)
-        W5-W8  Transverse with uniform roof pressures
+    Each rafter is classified independently as upwind or downwind.
+    Per-rafter table selection:
+        pitch < 10 deg  → Table 5.3(A) zone-based
+        pitch >= 10 deg, upwind  → Table 5.3(B) uniform
+        pitch >= 10 deg, downwind → Table 5.3(C) uniform
 
-    For mono roofs (pitch >= 10 deg):
-        W1-W2  Upslope wind (low->high), uplift/downward (Table 5.3B)
-        W3-W4  Downslope wind (high->low), uplift/downward (Table 5.3C)
-        W5-W8  Transverse (same as gable)
-
-    For mono roofs (pitch < 10 deg):
-        Same as gable (roof treated as near-flat per standard)
+    Args:
+        roof_pitch: Left rafter pitch (alpha1) in degrees.
+        roof_pitch_2: Right rafter pitch (alpha2). None = same as roof_pitch.
 
     All pressures are Wu (ULS). SLS uses qs/qu scaling in combinations.
     """
     qu = cp.qu
     kc_e = cp.kc_e
     kc_i = cp.kc_i
+    left_pitch = roof_pitch
+    right_pitch = roof_pitch_2 if roof_pitch_2 is not None else roof_pitch
 
     # Frame geometry
     if roof_type == "mono":
@@ -434,14 +468,12 @@ def generate_standard_wind_cases(
         return round(cfig(cp_e, cp_i, kc_e, kc_i) * qu, 4)
 
     cases = []
-    use_mono_tables = (roof_type == "mono" and roof_pitch >= 10.0)
 
     # ================================================================
     # CROSSWIND CASES (W1-W4): wind across the ridge, in frame plane
     # ================================================================
-    if use_mono_tables:
+    if roof_type == "mono" and roof_pitch >= 10.0:
         # Mono roof >= 10 deg: Tables 5.3(B) upwind and 5.3(C) downwind
-        # Uniform pressure on single rafter (no zones)
         cpe_up_uplift, cpe_up_downward = _interp_53b(h_over_d, roof_pitch)
         cpe_down = _interp_53c(h_over_d, roof_pitch, b_over_d)
 
@@ -455,31 +487,29 @@ def generate_standard_wind_cases(
             lw_p = wu(lw_cpe, cpi_val)
 
             if is_upslope:
-                # Wind from low side (left) going up the slope
                 dir_label = "Upslope"
                 direction = "crosswind_LR"
                 left_wall, right_wall = ww_p, lw_p
                 use_uplift = (envelope == "max_uplift")
                 roof_cpe = cpe_up_uplift if use_uplift else cpe_up_downward
             else:
-                # Wind from high side (right) going down the slope
                 dir_label = "Downslope"
                 direction = "crosswind_RL"
                 left_wall, right_wall = lw_p, ww_p
-                roof_cpe = cpe_down  # Table 5.3(C) single value
+                roof_cpe = cpe_down
 
             roof_p = wu(roof_cpe, cpi_val)
-
             cases.append(WindCase(
                 name=f"W{case_num}",
                 description=f"{dir_label} - {desc_env}",
                 direction=direction, envelope=envelope,
-                is_crosswind=False,  # uniform, not zone-based
+                is_crosswind=False,
                 left_wall=left_wall, right_wall=right_wall,
                 left_rafter=roof_p, right_rafter=0.0,
             ))
+
     elif roof_type == "mono":
-        # Mono < 10 deg: Table 5.3(A) zone-based, but single rafter (no split)
+        # Mono < 10 deg: Table 5.3(A) zone-based, single rafter (no split)
         for case_num, theta, cpi_val, envelope, desc_env in [
             (1, 0,   cp.cpi_uplift,   "max_uplift",   "max uplift"),
             (2, 180, cp.cpi_uplift,   "max_uplift",   "max uplift"),
@@ -489,33 +519,28 @@ def generate_standard_wind_cases(
             is_LR = (theta == 0)
             dir_label = "L-R" if is_LR else "R-L"
             direction = "crosswind_LR" if is_LR else "crosswind_RL"
-
             ww_p = wu(cp.windward_wall_cpe, cpi_val)
             lw_p = wu(lw_cpe, cpi_val)
-
             use_uplift = (envelope == "max_uplift")
             full_zones = _compute_zone_loads(
                 span, h, h_over_d, cpi_val, kc_e, kc_i, qu, use_uplift
             )
-            # Mono: single rafter gets the full-span zones (no split)
             rafter_zones = full_zones if is_LR else _mirror_zones(full_zones)
-
             if is_LR:
                 left_wall, right_wall = ww_p, lw_p
             else:
                 left_wall, right_wall = lw_p, ww_p
-
             cases.append(WindCase(
                 name=f"W{case_num}",
                 description=f"Crosswind {dir_label} - {desc_env}",
                 direction=direction, envelope=envelope,
                 is_crosswind=True,
                 left_wall=left_wall, right_wall=right_wall,
-                left_rafter_zones=rafter_zones,
-                right_rafter_zones=[],
+                left_rafter_zones=rafter_zones, right_rafter_zones=[],
             ))
+
     else:
-        # Gable: Table 5.3(A) zone-based, split at ridge
+        # Gable: each rafter handled independently by its pitch
         for case_num, theta, cpi_val, envelope, desc_env in [
             (1, 0,   cp.cpi_uplift,   "max_uplift",   "max uplift"),
             (2, 180, cp.cpi_uplift,   "max_uplift",   "max uplift"),
@@ -525,33 +550,57 @@ def generate_standard_wind_cases(
             is_LR = (theta == 0)
             dir_label = "L-R" if is_LR else "R-L"
             direction = "crosswind_LR" if is_LR else "crosswind_RL"
-
             ww_p = wu(cp.windward_wall_cpe, cpi_val)
             lw_p = wu(lw_cpe, cpi_val)
-
             use_uplift = (envelope == "max_uplift")
+
+            # Pre-compute full-span zones (for any rafter that needs 5.3A)
             full_zones = _compute_zone_loads(
                 span, h, h_over_d, cpi_val, kc_e, kc_i, qu, use_uplift
             )
-            left_zones, right_zones = _split_zones_to_rafters(full_zones, split_pct)
+
+            # Assign upwind/downwind roles based on wind direction
+            if is_LR:
+                left_role, right_role = "upwind", "downwind"
+            else:
+                left_role, right_role = "downwind", "upwind"
+
+            l_zones, l_uniform = _rafter_pressure(
+                left_pitch, left_role, h_over_d, b_over_d,
+                cpi_val, kc_e, kc_i, qu, use_uplift,
+                full_zones, split_pct, is_left=True,
+            )
+            r_zones, r_uniform = _rafter_pressure(
+                right_pitch, right_role, h_over_d, b_over_d,
+                cpi_val, kc_e, kc_i, qu, use_uplift,
+                full_zones, split_pct, is_left=False,
+            )
+
+            # For R-L wind, mirror the zone-based rafters
+            if not is_LR:
+                if l_zones and r_zones:
+                    l_zones, r_zones = _mirror_zones(r_zones), _mirror_zones(l_zones)
+                elif l_zones:
+                    l_zones = _mirror_zones(l_zones)
+                elif r_zones:
+                    r_zones = _mirror_zones(r_zones)
 
             if is_LR:
                 left_wall, right_wall = ww_p, lw_p
             else:
                 left_wall, right_wall = lw_p, ww_p
-                left_zones, right_zones = (
-                    _mirror_zones(right_zones),
-                    _mirror_zones(left_zones),
-                )
+
+            # is_crosswind=True if ANY rafter uses zones
+            has_zones = bool(l_zones or r_zones)
 
             cases.append(WindCase(
                 name=f"W{case_num}",
                 description=f"Crosswind {dir_label} - {desc_env}",
                 direction=direction, envelope=envelope,
-                is_crosswind=True,
+                is_crosswind=has_zones,
                 left_wall=left_wall, right_wall=right_wall,
-                left_rafter_zones=left_zones,
-                right_rafter_zones=right_zones,
+                left_rafter_zones=l_zones, right_rafter_zones=r_zones,
+                left_rafter=l_uniform, right_rafter=r_uniform,
             ))
 
     # ================================================================
