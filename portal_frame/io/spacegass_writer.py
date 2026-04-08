@@ -106,7 +106,7 @@ class SpaceGassWriter:
         lines.append("")
         lines.append(
             "UNITS LENGTH:m, SECTION:m, STRENGTH:kPa, DENSITY:T/m^3, "
-            "TEMP:Celsius, FORCE:kN, MOMENT:kNm, MASS:T, ACC:m/sec^2, "
+            "TEMP:Celsius, FORCE:kN, MOMENT:kNm, MASS:T, ACC:g's, "
             "TRANS:m, STRESS:kPa"
         )
         lines.append("")
@@ -168,7 +168,7 @@ class SpaceGassWriter:
         if not self.loads.include_self_weight:
             return ""
         lines = ["SELFWEIGHT"]
-        lines.append("1,0.0,-9.807E-03,0.0")
+        lines.append("1,0.0,-1.0,0.0")
         lines.append("")
         return "\n".join(lines)
 

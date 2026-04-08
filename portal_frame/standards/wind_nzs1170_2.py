@@ -379,6 +379,145 @@ class WindCpInputs:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Surface coefficient extraction (for GUI surface-based table)
+# ──────────────────────────────────────────────────────────────────────
+
+# Side wall Cp,e zones per Table 5.2(C) -- measured from windward edge in multiples of h
+SIDE_WALL_CPE_ZONES = [
+    (0.0, 1.0, -0.65),
+    (1.0, 2.0, -0.5),
+    (2.0, 3.0, -0.3),
+    (3.0, None, -0.2),
+]
+
+
+def get_surface_coefficients(
+    span: float,
+    eave_height: float,
+    roof_pitch: float,
+    building_depth: float,
+    windward_wall_cpe: float = 0.7,
+    roof_type: str = "gable",
+    roof_pitch_2: float | None = None,
+):
+    """Extract raw Cp,e values per surface for the GUI surface table.
+
+    Returns dict with wall and roof Cp,e data, without applying Kc,e/Kc,i/qu.
+    Used by the WindSurfacePanel to populate the editable table.
+
+    Returns:
+        {
+            "h": float,
+            "h_over_d": float,
+            "d_over_b": float,
+            "walls": {
+                "windward_cpe": float,
+                "leeward_cpe": float,
+                "side_zones": [(start_mult, end_mult, cpe), ...],
+            },
+            "roof": {
+                "type": "zones" | "uniform" | "mixed",
+                "zones": [(start_mult, end_mult, cpe_uplift, cpe_downward), ...],
+                "left_uniform": (cpe_uplift, cpe_downward) | None,
+                "right_uniform": (cpe_uplift, cpe_downward) | None,
+            },
+        }
+    """
+    left_pitch = roof_pitch
+    right_pitch = roof_pitch_2 if roof_pitch_2 is not None else roof_pitch
+
+    # Frame geometry
+    if roof_type == "mono":
+        ridge = eave_height + span * math.tan(math.radians(roof_pitch))
+    else:
+        tan_l = math.tan(math.radians(left_pitch))
+        tan_r = math.tan(math.radians(right_pitch))
+        if tan_l + tan_r > 0:
+            apex_x = span * tan_r / (tan_l + tan_r)
+        else:
+            apex_x = span * 0.5
+        ridge = eave_height + apex_x * tan_l
+    h = (eave_height + ridge) / 2.0
+
+    d_over_b = span / building_depth if building_depth > 0 else 1.0
+    b_over_d = building_depth / span if span > 0 else 1.0
+    h_over_d = h / span if span > 0 else 0.5
+
+    # --- Walls ---
+    lw_cpe = leeward_cpe_lookup(d_over_b, roof_pitch)
+
+    # Side wall zones with distance labels
+    side_zones = []
+    for s_mult, e_mult, cpe in SIDE_WALL_CPE_ZONES:
+        start_m = s_mult * h
+        if start_m >= building_depth:
+            break
+        end_m = building_depth if e_mult is None else min(e_mult * h, building_depth)
+        side_zones.append((s_mult, e_mult, cpe, round(start_m, 2), round(end_m, 2)))
+
+    # --- Roof ---
+    roof_data = {"type": "zones", "zones": [], "left_uniform": None, "right_uniform": None}
+
+    if roof_type == "mono" and roof_pitch >= 10.0:
+        # Uniform: Table 5.3(B) for upwind, 5.3(C) for downwind
+        cpe_up_uplift, cpe_up_downward = _interp_53b(h_over_d, roof_pitch)
+        cpe_down = _interp_53c(h_over_d, roof_pitch, b_over_d)
+        roof_data["type"] = "uniform"
+        roof_data["left_uniform"] = (cpe_up_uplift, cpe_up_downward)
+        roof_data["right_uniform"] = (cpe_down, cpe_down)  # downwind same for both envelopes
+    elif roof_type == "gable":
+        # Zone-based from Table 5.3(A), but override per-rafter if pitch >= 10
+        zone_table = roof_cpe_zones(h_over_d)
+        zones_with_dist = []
+        for s_mult, e_mult, cpe_up, cpe_dn in zone_table:
+            start_m = s_mult * h
+            if start_m >= span:
+                break
+            end_m = span if e_mult is None else min(e_mult * h, span)
+            zones_with_dist.append((s_mult, e_mult, cpe_up, cpe_dn,
+                                    round(start_m, 2), round(end_m, 2)))
+        roof_data["zones"] = zones_with_dist
+
+        if left_pitch >= 10.0:
+            cpe_up, cpe_dn = _interp_53b(h_over_d, left_pitch)
+            cpe_down = _interp_53c(h_over_d, left_pitch, b_over_d)
+            roof_data["left_uniform"] = (cpe_up, cpe_dn, cpe_down)
+        if right_pitch >= 10.0:
+            cpe_up, cpe_dn = _interp_53b(h_over_d, right_pitch)
+            cpe_down = _interp_53c(h_over_d, right_pitch, b_over_d)
+            roof_data["right_uniform"] = (cpe_up, cpe_dn, cpe_down)
+
+        if roof_data["left_uniform"] or roof_data["right_uniform"]:
+            roof_data["type"] = "mixed"
+    else:
+        # Mono < 10 or gable < 10: pure zone-based
+        zone_table = roof_cpe_zones(h_over_d)
+        zones_with_dist = []
+        for s_mult, e_mult, cpe_up, cpe_dn in zone_table:
+            start_m = s_mult * h
+            if start_m >= span:
+                break
+            end_m = span if e_mult is None else min(e_mult * h, span)
+            zones_with_dist.append((s_mult, e_mult, cpe_up, cpe_dn,
+                                    round(start_m, 2), round(end_m, 2)))
+        roof_data["zones"] = zones_with_dist
+
+    return {
+        "h": round(h, 3),
+        "h_over_d": round(h_over_d, 4),
+        "d_over_b": round(d_over_b, 4),
+        "b_over_d": round(b_over_d, 4),
+        "building_depth": building_depth,
+        "walls": {
+            "windward_cpe": windward_wall_cpe,
+            "leeward_cpe": lw_cpe,
+            "side_zones": side_zones,
+        },
+        "roof": roof_data,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Standard 8-case wind generation
 # ──────────────────────────────────────────────────────────────────────
 
