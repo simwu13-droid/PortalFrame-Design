@@ -9,7 +9,9 @@ from portal_frame.analysis.results import (
     AnalysisOutput, CaseResult, MemberResult, MemberStationResult,
     NodeResult, ReactionResult,
 )
-from portal_frame.analysis.combinations import combine_case_results, compute_envelopes
+from portal_frame.analysis.combinations import (
+    combine_case_results, compute_envelopes, compute_envelope_curves,
+)
 from portal_frame.standards.combinations_nzs1170_0 import build_combinations
 from portal_frame.standards.earthquake_nzs1170_5 import calculate_earthquake_forces
 
@@ -73,6 +75,7 @@ class PyNiteSolver(AnalysisSolver):
             combo_descriptions=combo_descriptions,
         )
         compute_envelopes(self._output)
+        compute_envelope_curves(self._output)
 
         return AnalysisResults(solved=True)
 

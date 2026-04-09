@@ -97,3 +97,117 @@ def _update_min(env, key, value, combo_name, mid=0, pct=0.0):
 def _update_abs_max(env, key, value, combo_name, mid=0, pct=0.0):
     if key not in env or abs(value) > abs(env[key].value):
         env[key] = EnvelopeEntry(value, combo_name, mid, pct)
+
+
+def compute_envelope_curves(output: AnalysisOutput) -> None:
+    """Compute per-station envelope curves for ULS and SLS combo sets.
+
+    For each combo set (ULS, SLS), produces two synthetic CaseResult objects:
+    - envelope_max: max of each attribute at each station across all combos
+    - envelope_min: min of each attribute at each station across all combos
+
+    Note: envelope max moment at station j is taken over all ULS combos
+    independently of max shear at station j. The resulting CaseResult is
+    a display-only construct — it does not represent any single physical
+    state — but shows the bounding curves that the member must survive.
+
+    Mutates output in place by setting output.uls_envelope_curves and
+    output.sls_envelope_curves.
+    """
+    output.uls_envelope_curves = _build_envelope_pair(
+        output.combo_results, prefix="ULS")
+    output.sls_envelope_curves = _build_envelope_pair(
+        output.combo_results, prefix="SLS")
+
+
+def _build_envelope_pair(
+    combo_results: dict[str, CaseResult],
+    prefix: str,
+) -> tuple | None:
+    """Build (max, min) CaseResult pair from all combos matching the prefix.
+
+    Returns None if no combos match the prefix.
+    """
+    matching = {name: cr for name, cr in combo_results.items()
+                if name.startswith(prefix)}
+    if not matching:
+        return None
+
+    # Use the first combo as a structural template for members/nodes
+    ref_cr = next(iter(matching.values()))
+
+    # Build max and min CaseResults by walking every station of every combo
+    max_members = {}
+    min_members = {}
+    for mid, ref_mr in ref_cr.members.items():
+        n_stations = len(ref_mr.stations)
+        max_stations = [
+            MemberStationResult(
+                position=ref_mr.stations[j].position,
+                position_pct=ref_mr.stations[j].position_pct,
+                axial=float("-inf"),
+                shear=float("-inf"),
+                moment=float("-inf"),
+                dy_local=float("-inf"),
+            )
+            for j in range(n_stations)
+        ]
+        min_stations = [
+            MemberStationResult(
+                position=ref_mr.stations[j].position,
+                position_pct=ref_mr.stations[j].position_pct,
+                axial=float("inf"),
+                shear=float("inf"),
+                moment=float("inf"),
+                dy_local=float("inf"),
+            )
+            for j in range(n_stations)
+        ]
+        for cr in matching.values():
+            if mid not in cr.members:
+                continue
+            for j, st in enumerate(cr.members[mid].stations):
+                if j >= n_stations:
+                    break
+                ms = max_stations[j]
+                if st.axial > ms.axial:
+                    ms.axial = st.axial
+                if st.shear > ms.shear:
+                    ms.shear = st.shear
+                if st.moment > ms.moment:
+                    ms.moment = st.moment
+                if st.dy_local > ms.dy_local:
+                    ms.dy_local = st.dy_local
+                mn = min_stations[j]
+                if st.axial < mn.axial:
+                    mn.axial = st.axial
+                if st.shear < mn.shear:
+                    mn.shear = st.shear
+                if st.moment < mn.moment:
+                    mn.moment = st.moment
+                if st.dy_local < mn.dy_local:
+                    mn.dy_local = st.dy_local
+
+        max_mr = MemberResult(member_id=mid, stations=max_stations)
+        max_mr.compute_extremes()
+        max_members[mid] = max_mr
+        min_mr = MemberResult(member_id=mid, stations=min_stations)
+        min_mr.compute_extremes()
+        min_members[mid] = min_mr
+
+    # Envelope CaseResults don't carry meaningful deflections/reactions at
+    # the node level — those would need separate per-node envelopes. Leave
+    # them empty; the renderer only uses members[].stations[] for curves.
+    max_cr = CaseResult(
+        case_name=f"{prefix} Envelope Max",
+        members=max_members,
+        deflections={},
+        reactions={},
+    )
+    min_cr = CaseResult(
+        case_name=f"{prefix} Envelope Min",
+        members=min_members,
+        deflections={},
+        reactions={},
+    )
+    return (max_cr, min_cr)

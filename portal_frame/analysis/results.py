@@ -84,3 +84,6 @@ class AnalysisOutput:
     uls_envelope: dict[str, EnvelopeEntry] = field(default_factory=dict)
     sls_envelope: dict[str, EnvelopeEntry] = field(default_factory=dict)
     combo_descriptions: dict[str, str] = field(default_factory=dict)
+    # Envelope curves: (max, min) CaseResult pair per combo set, or None
+    uls_envelope_curves: tuple | None = None   # (max CaseResult, min CaseResult)
+    sls_envelope_curves: tuple | None = None

@@ -344,3 +344,64 @@ def test_combine_propagates_dy_local():
     cases = {"G": g_case}
     combo = combine_case_results(cases, {"G": 1.35}, "ULS-1")
     assert abs(combo.members[1].stations[1].dy_local - 1.35 * -5.0) < 0.01
+
+
+def test_envelope_curves_computed_on_solve():
+    """After solve(), uls_envelope_curves and sls_envelope_curves are populated."""
+    req = _make_portal_request()
+    solver = PyNiteSolver()
+    solver.build_model(req)
+    solver.solve()
+
+    out = solver.output
+    assert out.uls_envelope_curves is not None
+    assert out.sls_envelope_curves is not None
+    uls_max, uls_min = out.uls_envelope_curves
+    sls_max, sls_min = out.sls_envelope_curves
+    # Each envelope has the same members as the combos
+    assert set(uls_max.members.keys()) == set(out.combo_results["ULS-1"].members.keys())
+    assert set(sls_max.members.keys()) == set(out.combo_results["SLS-1"].members.keys())
+
+
+def test_envelope_max_bounds_all_combos():
+    """Envelope max at each station >= value at that station in every combo."""
+    req = _make_portal_request()
+    solver = PyNiteSolver()
+    solver.build_model(req)
+    solver.solve()
+
+    out = solver.output
+    uls_max, uls_min = out.uls_envelope_curves
+    uls_combos = [cr for name, cr in out.combo_results.items()
+                  if name.startswith("ULS")]
+
+    for mid, env_mr in uls_max.members.items():
+        for j, env_st in enumerate(env_mr.stations):
+            for combo_cr in uls_combos:
+                combo_st = combo_cr.members[mid].stations[j]
+                assert env_st.moment >= combo_st.moment - 1e-9
+                assert env_st.shear >= combo_st.shear - 1e-9
+                assert env_st.axial >= combo_st.axial - 1e-9
+                assert env_st.dy_local >= combo_st.dy_local - 1e-9
+
+
+def test_envelope_min_bounds_all_combos():
+    """Envelope min at each station <= value at that station in every combo."""
+    req = _make_portal_request()
+    solver = PyNiteSolver()
+    solver.build_model(req)
+    solver.solve()
+
+    out = solver.output
+    uls_max, uls_min = out.uls_envelope_curves
+    uls_combos = [cr for name, cr in out.combo_results.items()
+                  if name.startswith("ULS")]
+
+    for mid, env_mr in uls_min.members.items():
+        for j, env_st in enumerate(env_mr.stations):
+            for combo_cr in uls_combos:
+                combo_st = combo_cr.members[mid].stations[j]
+                assert env_st.moment <= combo_st.moment + 1e-9
+                assert env_st.shear <= combo_st.shear + 1e-9
+                assert env_st.axial <= combo_st.axial + 1e-9
+                assert env_st.dy_local <= combo_st.dy_local + 1e-9
