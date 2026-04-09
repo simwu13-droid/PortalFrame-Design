@@ -169,3 +169,140 @@ def test_beam_gravity_midspan_moment():
     # Find midspan station (50%)
     mid_station = next(s for s in mr.stations if abs(s.position_pct - 50) < 3)
     assert abs(mid_station.moment - 125.0) < 1.0
+
+
+def test_local_axis_conventions():
+    """Verify PyNite local axis directions match our documented conventions."""
+    from Pynite import FEModel3D
+    import numpy as np
+
+    m = FEModel3D()
+    m.add_material('Steel', 200e6, 80e6, 0.3, 7850)
+    m.add_section('S', 0.005, 5e-5, 5e-5, 5e-5)
+
+    m.add_node('N1', 0, 0, 0)
+    m.add_node('N2', 0, 4, 0)
+    m.add_node('N3', 6, 5, 0)
+
+    m.add_member('Col', 'N1', 'N2', 'Steel', 'S')
+    m.add_member('Raf', 'N2', 'N3', 'Steel', 'S')
+
+    T_col = np.array(m.members['Col'].T())
+    local_x_col = T_col[0, :3]
+    assert abs(local_x_col[1] - 1.0) < 0.01, f"Column local x should be upward, got {local_x_col}"
+
+    T_raf = np.array(m.members['Raf'].T())
+    local_x_raf = T_raf[0, :3]
+    dx, dy = 6, 1
+    L = (dx**2 + dy**2)**0.5
+    expected_x = [dx/L, dy/L, 0]
+    for i in range(3):
+        assert abs(local_x_raf[i] - expected_x[i]) < 0.01, \
+            f"Rafter local x mismatch: got {local_x_raf}, expected {expected_x}"
+
+    local_y_raf = T_raf[1, :3]
+    expected_y = [-dy/L, dx/L, 0]
+    for i in range(3):
+        assert abs(local_y_raf[i] - expected_y[i]) < 0.01, \
+            f"Rafter local y mismatch: got {local_y_raf}, expected {expected_y}"
+
+
+def _make_portal_request(span=12.0, eave=4.5, pitch=5.0, bay=7.2,
+                         w_dead=0.15, w_live=0.25, supports="pinned"):
+    """Standard gable portal frame request."""
+    from portal_frame.models.geometry import PortalFrameGeometry
+    geom = PortalFrameGeometry(
+        span=span, eave_height=eave, roof_pitch=pitch,
+        roof_type="gable", bay_spacing=bay,
+    )
+    topology = geom.to_topology()
+    sec = CFS_Section(
+        name="63020S2", library="test", library_name="FS", group="C",
+        Ax=689.0, J=518.0, Iy=4.36e6, Iz=0.627e6,
+    )
+    return AnalysisRequest(
+        topology=topology, column_section=sec, rafter_section=sec,
+        supports=SupportCondition(left_base=supports, right_base=supports),
+        load_input=LoadInput(
+            dead_load_roof=w_dead, dead_load_wall=0.0,
+            live_load_roof=w_live, wind_cases=[],
+            include_self_weight=False,
+        ),
+        span=span, eave_height=eave, roof_pitch=pitch, bay_spacing=bay,
+    )
+
+
+def test_portal_gravity_equilibrium():
+    """Vertical reactions must equal total applied vertical load."""
+    req = _make_portal_request()
+    solver = PyNiteSolver()
+    solver.build_model(req)
+    solver.solve()
+
+    g_case = solver.output.case_results["G"]
+    total_fy = sum(r.fy for r in g_case.reactions.values())
+    expected = 0.15 * 7.2 * 12.0
+    assert abs(total_fy - expected) < 0.5, f"Total Fy={total_fy}, expected={expected}"
+
+
+def test_portal_symmetric_reactions():
+    """Symmetric gable under gravity: left and right reactions should be equal."""
+    req = _make_portal_request()
+    solver = PyNiteSolver()
+    solver.build_model(req)
+    solver.solve()
+
+    g_case = solver.output.case_results["G"]
+    rxns = sorted(g_case.reactions.values(), key=lambda r: r.node_id)
+    assert abs(rxns[0].fy - rxns[-1].fy) < 0.1
+
+
+def test_portal_combinations_count():
+    """Portal with gravity only: should have ULS-1, ULS-2, SLS-1."""
+    req = _make_portal_request()
+    solver = PyNiteSolver()
+    solver.build_model(req)
+    solver.solve()
+
+    out = solver.output
+    assert "ULS-1" in out.combo_results
+    assert "ULS-2" in out.combo_results
+    assert "SLS-1" in out.combo_results
+
+
+def test_portal_uls1_is_135_times_dead():
+    """ULS-1 = 1.35G: combo moment should be 1.35x dead-only moment."""
+    req = _make_portal_request()
+    solver = PyNiteSolver()
+    solver.build_model(req)
+    solver.solve()
+
+    out = solver.output
+    g_moment = out.case_results["G"].members[3].max_moment
+    uls1_moment = out.combo_results["ULS-1"].members[3].max_moment
+    assert abs(uls1_moment - 1.35 * g_moment) < 0.01
+
+
+def test_portal_asymmetric_wind_equilibrium():
+    """Asymmetric wind: reactions should be non-zero under wind loading."""
+    from portal_frame.models.loads import WindCase
+    req = _make_portal_request(span=12.0, eave=4.5, pitch=5.0, bay=7.2)
+    req.load_input.wind_cases = [
+        WindCase(
+            name="W1", description="Test wind",
+            left_wall=0.8, right_wall=-0.5,
+            left_rafter=-0.9, right_rafter=-0.7,
+            left_rafter_zones=[], right_rafter_zones=[],
+            is_crosswind=False, direction="transverse", envelope="uplift",
+        ),
+    ]
+    solver = PyNiteSolver()
+    solver.build_model(req)
+    solver.solve()
+
+    w1_case = solver.output.case_results["W1"]
+    total_rxn_fx = sum(r.fx for r in w1_case.reactions.values())
+    assert abs(total_rxn_fx) > 0.1, "Should have non-zero horizontal reactions under wind"
+
+    total_rxn_fy = sum(r.fy for r in w1_case.reactions.values())
+    assert abs(total_rxn_fy) > 0.1, "Should have vertical reactions from rafter wind"
