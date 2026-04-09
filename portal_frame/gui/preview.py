@@ -6,6 +6,14 @@ import math
 from portal_frame.gui.theme import COLORS, FONT_SMALL
 
 
+DIAGRAM_COLORS = {
+    "M": "#e06c75",
+    "V": "#c678dd",
+    "N": "#e5c07b",
+}
+DIAGRAM_MAX_PX = 60
+
+
 class FramePreview(tk.Canvas):
     """Live 2D sketch of the portal frame with optional UDL arrows.
 
@@ -26,6 +34,7 @@ class FramePreview(tk.Canvas):
         self._geom = None
         self._supports = ("pinned", "pinned")
         self._loads = None
+        self._diagram = None
         # Drag state
         self._drag_item = None
         self._drag_label_key = None
@@ -35,7 +44,7 @@ class FramePreview(tk.Canvas):
 
     def _on_resize(self, *_):
         if self._geom:
-            self.update_frame(self._geom, self._supports, self._loads)
+            self.update_frame(self._geom, self._supports, self._loads, self._diagram)
 
     # ── Draggable label infrastructure ──
 
@@ -167,10 +176,11 @@ class FramePreview(tk.Canvas):
 
     # ── Main draw ──
 
-    def update_frame(self, geom: dict, supports: tuple, loads: dict = None):
+    def update_frame(self, geom: dict, supports: tuple, loads: dict = None, diagram: dict = None):
         self._geom = geom
         self._supports = supports
         self._loads = loads
+        self._diagram = diagram
         self.delete("all")
         self._label_items = []
         self._label_positions = {}
@@ -390,6 +400,19 @@ class FramePreview(tk.Canvas):
             self.create_text(lx + 25, ly, text="Load", fill=COLORS["fg_dim"],
                              font=FONT_SMALL, anchor="w")
 
+        # Force diagram overlay
+        if diagram and diagram.get("data"):
+            self.draw_force_diagram(diagram, ns)
+
+        if diagram and diagram.get("data"):
+            dtype = diagram.get("type", "M")
+            dcolor = DIAGRAM_COLORS.get(dtype, "#e06c75")
+            ly += 16
+            self.create_line(lx, ly, lx + 20, ly, fill=dcolor, width=2)
+            label_map = {"M": "Moment", "V": "Shear", "N": "Axial"}
+            self.create_text(lx + 25, ly, text=label_map.get(dtype, dtype),
+                             fill=COLORS["fg_dim"], font=FONT_SMALL, anchor="w")
+
         # Prune stale drag offsets for labels no longer present
         stale = [k for k in self._label_offsets if k not in self._label_positions]
         for k in stale:
@@ -397,6 +420,85 @@ class FramePreview(tk.Canvas):
 
         # Resolve label overlaps
         self._resolve_overlaps()
+
+    # ── Force diagram drawing ──
+
+    def draw_force_diagram(self, diagram, ns):
+        """Draw force diagram overlaid on frame members."""
+        data = diagram["data"]
+        dtype = diagram["type"]
+        members_map = diagram.get("members", {})
+        color = DIAGRAM_COLORS.get(dtype, "#e06c75")
+
+        max_val = 0
+        for stations in data.values():
+            for _, val in stations:
+                max_val = max(max_val, abs(val))
+        if max_val < 1e-6:
+            return
+
+        for mid, stations in data.items():
+            if mid not in members_map:
+                continue
+            n_start, n_end = members_map[mid]
+            if n_start not in ns or n_end not in ns:
+                continue
+
+            sx, sy = ns[n_start]
+            ex, ey = ns[n_end]
+
+            dx = ex - sx
+            dy = ey - sy
+            length = math.hypot(dx, dy)
+            if length < 1:
+                continue
+
+            nx = -dy / length
+            ny = dx / length
+
+            baseline_pts = []
+            diagram_pts = []
+            for pct, val in stations:
+                t = pct / 100.0
+                px = sx + dx * t
+                py = sy + dy * t
+                baseline_pts.append((px, py))
+                offset = (val / max_val) * DIAGRAM_MAX_PX
+                diagram_pts.append((px + nx * offset, py + ny * offset))
+
+            poly_pts = []
+            for pt in baseline_pts:
+                poly_pts.extend(pt)
+            for pt in reversed(diagram_pts):
+                poly_pts.extend(pt)
+
+            if len(poly_pts) >= 6:
+                self.create_polygon(
+                    *poly_pts, fill="", outline=color, width=2,
+                    tags=("diagram",))
+                self.create_polygon(
+                    *poly_pts, fill=color, outline="", stipple="gray25",
+                    tags=("diagram",))
+
+            curve_coords = []
+            for pt in diagram_pts:
+                curve_coords.extend(pt)
+            if len(curve_coords) >= 4:
+                self.create_line(*curve_coords, fill=color, width=2,
+                                 tags=("diagram",))
+
+            peak_val = max(stations, key=lambda s: abs(s[1]))
+            if abs(peak_val[1]) > 1e-6:
+                t = peak_val[0] / 100.0
+                px = sx + dx * t
+                py = sy + dy * t
+                offset = (peak_val[1] / max_val) * DIAGRAM_MAX_PX
+                lx = px + nx * (offset + 12 * (1 if offset >= 0 else -1))
+                ly = py + ny * (offset + 12 * (1 if offset >= 0 else -1))
+                unit = {"M": "kNm", "V": "kN", "N": "kN"}[dtype]
+                self._create_label(
+                    lx, ly, f"{peak_val[1]:.1f} {unit}",
+                    f"diag_{mid}_{dtype}", fill=color)
 
     # ── Load drawing ──
 
