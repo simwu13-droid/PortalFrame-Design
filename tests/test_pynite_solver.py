@@ -101,3 +101,71 @@ def test_compute_envelopes_tracks_controlling_combo():
     assert out.uls_envelope["max_moment"].value == 78.0
     assert out.uls_envelope["max_moment"].combo_name == "ULS-2"
     assert out.uls_envelope["max_shear"].value == pytest.approx(33.5)
+
+
+import math
+from portal_frame.models.geometry import Node, Member, FrameTopology
+from portal_frame.models.sections import CFS_Section
+from portal_frame.models.loads import LoadInput
+from portal_frame.models.supports import SupportCondition
+from portal_frame.solvers.base import AnalysisRequest
+from portal_frame.solvers.pynite_solver import PyNiteSolver
+
+
+def _make_beam_request(span=10.0, w_dead=2.0, bay=5.0):
+    """Simple beam: 2 nodes, 1 rafter member, pinned-roller supports."""
+    nodes = {
+        1: Node(1, 0.0, 0.0),
+        2: Node(2, span, 0.0),
+    }
+    members = {1: Member(1, 1, 2, section_id=2)}  # rafter
+    topo = FrameTopology(nodes=nodes, members=members)
+
+    sec = CFS_Section(
+        name="Test", library="test", library_name="T", group="G",
+        Ax=500.0, J=1000.0, Iy=5e6, Iz=5e6,
+    )
+    supports = SupportCondition(left_base="pinned", right_base="pinned")
+    loads = LoadInput(
+        dead_load_roof=w_dead, dead_load_wall=0.0, live_load_roof=0.0,
+        wind_cases=[], include_self_weight=False,
+    )
+    return AnalysisRequest(
+        topology=topo, column_section=sec, rafter_section=sec,
+        supports=supports, load_input=loads,
+        span=span, eave_height=0.0, roof_pitch=0.0, bay_spacing=bay,
+    )
+
+
+def test_beam_gravity_reactions():
+    """Simply supported beam: reactions = wL/2."""
+    req = _make_beam_request(span=10.0, w_dead=2.0, bay=5.0)
+    solver = PyNiteSolver()
+    solver.build_model(req)
+    result = solver.solve()
+    assert result.solved is True
+
+    out = solver.output
+    g_case = out.case_results["G"]
+
+    # Total applied load = 2.0 kPa * 5.0 m bay * 10.0 m span = 100 kN
+    # Each reaction = 50 kN (downward load -> positive upward reaction)
+    assert abs(g_case.reactions[1].fy - 50.0) < 0.5
+    assert abs(g_case.reactions[2].fy - 50.0) < 0.5
+
+
+def test_beam_gravity_midspan_moment():
+    """Simply supported beam: M_max = wL^2/8 at midspan."""
+    req = _make_beam_request(span=10.0, w_dead=2.0, bay=5.0)
+    solver = PyNiteSolver()
+    solver.build_model(req)
+    solver.solve()
+
+    out = solver.output
+    g_case = out.case_results["G"]
+    mr = g_case.members[1]
+
+    # w = 2.0 * 5.0 = 10 kN/m, L = 10m -> M_max = 10*100/8 = 125 kNm
+    # Find midspan station (50%)
+    mid_station = next(s for s in mr.stations if abs(s.position_pct - 50) < 3)
+    assert abs(mid_station.moment - 125.0) < 1.0
