@@ -596,10 +596,9 @@ class FramePreview(tk.Canvas):
                         self.create_line(*curve_coords, fill=color,
                                          width=curve_width, tags=("diagram",))
 
-                # Peak label — skip on the min curve when envelope so we
-                # only see one label per member per station.
-                if is_min:
-                    continue
+                # Peak label — show for both max and min curves when envelope
+                # so the user can read both extremes directly. Prefix with
+                # "max:" / "min:" to disambiguate.
                 peak = max(stations, key=lambda s: abs(s[1]))
                 if abs(peak[1]) > 1e-6:
                     t = peak[0] / 100.0
@@ -609,9 +608,15 @@ class FramePreview(tk.Canvas):
                     lx = px + nx * (offset + 12 * (1 if offset >= 0 else -1))
                     ly = py + ny * (offset + 12 * (1 if offset >= 0 else -1))
                     unit = {"M": "kNm", "V": "kN", "N": "kN", "δ": "mm"}[dtype]
+                    if is_envelope:
+                        prefix = "min: " if is_min else "max: "
+                    else:
+                        prefix = ""
+                    label_key = (f"diag_{mid}_{dtype}_min" if is_min
+                                 else f"diag_{mid}_{dtype}")
                     self._create_label(
-                        lx, ly, f"{peak[1]:.1f} {unit}",
-                        f"diag_{mid}_{dtype}", fill=color)
+                        lx, ly, f"{prefix}{peak[1]:.1f} {unit}",
+                        label_key, fill=color)
 
         _draw_curves(data, is_min=False)
         if is_envelope:
