@@ -424,12 +424,18 @@ class FramePreview(tk.Canvas):
     # ── Force diagram drawing ──
 
     def draw_force_diagram(self, diagram, ns):
-        """Draw force diagram overlaid on frame members."""
+        """Draw force diagram overlaid on frame members.
+
+        Computes a global shrink factor so all diagrams (including peak value
+        labels) stay within the canvas bounds, preserving proportionality
+        across all members.
+        """
         data = diagram["data"]
         dtype = diagram["type"]
         members_map = diagram.get("members", {})
         color = DIAGRAM_COLORS.get(dtype, "#e06c75")
 
+        # Find max absolute value across all members for normalisation
         max_val = 0
         for stations in data.values():
             for _, val in stations:
@@ -437,33 +443,103 @@ class FramePreview(tk.Canvas):
         if max_val < 1e-6:
             return
 
+        # Canvas bounds with a small safety pad
+        w = self.winfo_width()
+        h = self.winfo_height()
+        pad = 20
+        # Reserve additional space for the fixed +12 peak-label offset. We apply
+        # this reservation to ALL stations (not just the peak) — it's conservative
+        # but eliminates sign-tracking complexity and is visually safe.
+        LABEL_EXTRA = 12
+        x_min = pad + LABEL_EXTRA
+        x_max = w - pad - LABEL_EXTRA
+        y_min = pad + LABEL_EXTRA
+        y_max = h - pad - LABEL_EXTRA
+
+        # Pre-compute member geometry
+        member_geom = {}  # mid -> (sx, sy, ex, ey, mdx, mdy, nx, ny)
         for mid, stations in data.items():
             if mid not in members_map:
                 continue
             n_start, n_end = members_map[mid]
             if n_start not in ns or n_end not in ns:
                 continue
-
             sx, sy = ns[n_start]
             ex, ey = ns[n_end]
-
-            dx = ex - sx
-            dy = ey - sy
-            length = math.hypot(dx, dy)
+            mdx = ex - sx
+            mdy = ey - sy
+            length = math.hypot(mdx, mdy)
             if length < 1:
                 continue
+            nx = -mdy / length
+            ny = mdx / length
+            member_geom[mid] = (sx, sy, ex, ey, mdx, mdy, nx, ny)
 
-            nx = -dy / length
-            ny = dx / length
+        # Pre-pass: find global shrink factor by checking every station's
+        # proposed diagram point against the effective bounds.
+        shrink = 1.0
+        for mid, stations in data.items():
+            if mid not in member_geom:
+                continue
+            sx, sy, ex, ey, mdx, mdy, nx, ny = member_geom[mid]
+            for pct, val in stations:
+                t = pct / 100.0
+                base_x = sx + mdx * t
+                base_y = sy + mdy * t
+
+                # Skip if baseline is outside effective bounds (shouldn't happen
+                # given existing frame padding, but defensive).
+                if (base_x < x_min or base_x > x_max or
+                        base_y < y_min or base_y > y_max):
+                    continue
+
+                # Unshrunken diagram offset at this station
+                k = (val / max_val) * DIAGRAM_MAX_PX
+                px_proposed = base_x + nx * k
+                py_proposed = base_y + ny * k
+
+                s_point = 1.0
+
+                # x-axis: if proposed point is outside, compute shrink to the
+                # violated wall. Formula: we want base_x + nx*k*s ∈ [x_min, x_max],
+                # so s = (boundary - base_x) / (nx*k) when the point is out on
+                # that side. Both numerator and denominator have the same sign
+                # in the out-of-bounds case, so s is positive.
+                nxk = nx * k
+                if abs(nxk) > 1e-9:
+                    if px_proposed > x_max:
+                        s_point = min(s_point, (x_max - base_x) / nxk)
+                    elif px_proposed < x_min:
+                        s_point = min(s_point, (x_min - base_x) / nxk)
+
+                nyk = ny * k
+                if abs(nyk) > 1e-9:
+                    if py_proposed > y_max:
+                        s_point = min(s_point, (y_max - base_y) / nyk)
+                    elif py_proposed < y_min:
+                        s_point = min(s_point, (y_min - base_y) / nyk)
+
+                if s_point < shrink:
+                    shrink = s_point
+
+        # Floor the shrink so tiny diagrams remain legible
+        shrink = max(shrink, 0.25)
+        effective_max_px = DIAGRAM_MAX_PX * shrink
+
+        # Draw pass
+        for mid, stations in data.items():
+            if mid not in member_geom:
+                continue
+            sx, sy, ex, ey, mdx, mdy, nx, ny = member_geom[mid]
 
             baseline_pts = []
             diagram_pts = []
             for pct, val in stations:
                 t = pct / 100.0
-                px = sx + dx * t
-                py = sy + dy * t
+                px = sx + mdx * t
+                py = sy + mdy * t
                 baseline_pts.append((px, py))
-                offset = (val / max_val) * DIAGRAM_MAX_PX
+                offset = (val / max_val) * effective_max_px
                 diagram_pts.append((px + nx * offset, py + ny * offset))
 
             poly_pts = []
@@ -487,17 +563,18 @@ class FramePreview(tk.Canvas):
                 self.create_line(*curve_coords, fill=color, width=2,
                                  tags=("diagram",))
 
-            peak_val = max(stations, key=lambda s: abs(s[1]))
-            if abs(peak_val[1]) > 1e-6:
-                t = peak_val[0] / 100.0
-                px = sx + dx * t
-                py = sy + dy * t
-                offset = (peak_val[1] / max_val) * DIAGRAM_MAX_PX
+            # Peak label (+12 is a fixed pixel offset reserved in the bounds pad)
+            peak = max(stations, key=lambda s: abs(s[1]))
+            if abs(peak[1]) > 1e-6:
+                t = peak[0] / 100.0
+                px = sx + mdx * t
+                py = sy + mdy * t
+                offset = (peak[1] / max_val) * effective_max_px
                 lx = px + nx * (offset + 12 * (1 if offset >= 0 else -1))
                 ly = py + ny * (offset + 12 * (1 if offset >= 0 else -1))
                 unit = {"M": "kNm", "V": "kN", "N": "kN"}[dtype]
                 self._create_label(
-                    lx, ly, f"{peak_val[1]:.1f} {unit}",
+                    lx, ly, f"{peak[1]:.1f} {unit}",
                     f"diag_{mid}_{dtype}", fill=color)
 
     # ── Load drawing ──
