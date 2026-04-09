@@ -256,16 +256,21 @@ class FramePreview(tk.Canvas):
         # Transform nodes
         ns = {k: tx(*v) for k, v in nodes.items()}
 
-        # Members
+        # Members — use dimmed colors when δ diagram is active so the
+        # deflection curve stands out against the structure.
+        is_deflection = bool(diagram and diagram.get("type") == "δ")
+        col_color = COLORS["frame_col_dim"] if is_deflection else COLORS["frame_col"]
+        raf_color = COLORS["frame_raf_dim"] if is_deflection else COLORS["frame_raf"]
+
         if roof_type == "mono":
-            self.create_line(*ns[1], *ns[2], fill=COLORS["frame_col"], width=3)
-            self.create_line(*ns[2], *ns[3], fill=COLORS["frame_raf"], width=3)
-            self.create_line(*ns[3], *ns[4], fill=COLORS["frame_col"], width=3)
+            self.create_line(*ns[1], *ns[2], fill=col_color, width=3)
+            self.create_line(*ns[2], *ns[3], fill=raf_color, width=3)
+            self.create_line(*ns[3], *ns[4], fill=col_color, width=3)
         else:
-            self.create_line(*ns[1], *ns[2], fill=COLORS["frame_col"], width=3)
-            self.create_line(*ns[5], *ns[4], fill=COLORS["frame_col"], width=3)
-            self.create_line(*ns[2], *ns[3], fill=COLORS["frame_raf"], width=3)
-            self.create_line(*ns[3], *ns[4], fill=COLORS["frame_raf"], width=3)
+            self.create_line(*ns[1], *ns[2], fill=col_color, width=3)
+            self.create_line(*ns[5], *ns[4], fill=col_color, width=3)
+            self.create_line(*ns[2], *ns[3], fill=raf_color, width=3)
+            self.create_line(*ns[3], *ns[4], fill=raf_color, width=3)
 
         # Crane bracket nodes (if crane_rail_height is set)
         crane_h = geom.get("crane_rail_height")
@@ -549,7 +554,11 @@ class FramePreview(tk.Canvas):
             for pt in reversed(diagram_pts):
                 poly_pts.extend(pt)
 
-            if len(poly_pts) >= 6:
+            # For δ, skip the hatched fill — draw only the deflection curve.
+            # For M/V/N, draw the filled polygon as before.
+            is_deflection = (dtype == "δ")
+
+            if not is_deflection and len(poly_pts) >= 6:
                 self.create_polygon(
                     *poly_pts, fill="", outline=color, width=2,
                     tags=("diagram",))
@@ -561,7 +570,8 @@ class FramePreview(tk.Canvas):
             for pt in diagram_pts:
                 curve_coords.extend(pt)
             if len(curve_coords) >= 4:
-                self.create_line(*curve_coords, fill=color, width=2,
+                curve_width = 3 if is_deflection else 2
+                self.create_line(*curve_coords, fill=color, width=curve_width,
                                  tags=("diagram",))
 
             # Peak label (+12 is a fixed pixel offset reserved in the bounds pad)

@@ -16,8 +16,10 @@ COLORS = {
     "border":       "#3e3e42",
     "canvas_bg":    "#1a1a2e",
     "canvas_grid":  "#2a2a3e",
-    "frame_col":    "#4ec9b0",
-    "frame_raf":    "#569cd6",
+    "frame_col":        "#4ec9b0",
+    "frame_col_dim":    "#2a5c54",  # Dimmed teal for deflection overlay
+    "frame_raf":        "#569cd6",
+    "frame_raf_dim":    "#2c4e6a",  # Dimmed blue for deflection overlay
     "frame_load":   "#dcdcaa",
     "frame_node":   "#ffffff",
     "frame_support":"#ce9178",
