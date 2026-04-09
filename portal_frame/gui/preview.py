@@ -441,11 +441,19 @@ class FramePreview(tk.Canvas):
         members_map = diagram.get("members", {})
         color = DIAGRAM_COLORS.get(dtype, "#e06c75")
 
-        # Find max absolute value across all members for normalisation
+        # Find max absolute value across all members for normalisation.
+        # For envelopes, scan both data (max curve) and data_min (min curve).
+        data_min = diagram.get("data_min")
+        is_envelope = data_min is not None
+
         max_val = 0
         for stations in data.values():
             for _, val in stations:
                 max_val = max(max_val, abs(val))
+        if is_envelope:
+            for stations in data_min.values():
+                for _, val in stations:
+                    max_val = max(max_val, abs(val))
         if max_val < 1e-6:
             return
 
@@ -482,111 +490,132 @@ class FramePreview(tk.Canvas):
             member_geom[mid] = (sx, sy, ex, ey, mdx, mdy, nx, ny)
 
         # Pre-pass: find global shrink factor by checking every station's
-        # proposed diagram point against the effective bounds.
+        # proposed diagram point against the effective bounds. For envelopes,
+        # both the max and min curves must fit.
         shrink = 1.0
-        for mid, stations in data.items():
-            if mid not in member_geom:
-                continue
-            sx, sy, ex, ey, mdx, mdy, nx, ny = member_geom[mid]
-            for pct, val in stations:
-                t = pct / 100.0
-                base_x = sx + mdx * t
-                base_y = sy + mdy * t
+        data_sources = [data]
+        if is_envelope:
+            data_sources.append(data_min)
 
-                # Skip if baseline is outside effective bounds (shouldn't happen
-                # given existing frame padding, but defensive).
-                if (base_x < x_min or base_x > x_max or
-                        base_y < y_min or base_y > y_max):
+        for data_source in data_sources:
+            for mid, stations in data_source.items():
+                if mid not in member_geom:
                     continue
+                sx, sy, ex, ey, mdx, mdy, nx, ny = member_geom[mid]
+                for pct, val in stations:
+                    t = pct / 100.0
+                    base_x = sx + mdx * t
+                    base_y = sy + mdy * t
 
-                # Unshrunken diagram offset at this station
-                k = (val / max_val) * DIAGRAM_MAX_PX
-                px_proposed = base_x + nx * k
-                py_proposed = base_y + ny * k
+                    # Skip if baseline is outside effective bounds (shouldn't happen
+                    # given existing frame padding, but defensive).
+                    if (base_x < x_min or base_x > x_max or
+                            base_y < y_min or base_y > y_max):
+                        continue
 
-                s_point = 1.0
+                    # Unshrunken diagram offset at this station
+                    k = (val / max_val) * DIAGRAM_MAX_PX
+                    px_proposed = base_x + nx * k
+                    py_proposed = base_y + ny * k
 
-                # x-axis: if proposed point is outside, compute shrink to the
-                # violated wall. Formula: we want base_x + nx*k*s ∈ [x_min, x_max],
-                # so s = (boundary - base_x) / (nx*k) when the point is out on
-                # that side. Both numerator and denominator have the same sign
-                # in the out-of-bounds case, so s is positive.
-                nxk = nx * k
-                if abs(nxk) > 1e-9:
-                    if px_proposed > x_max:
-                        s_point = min(s_point, (x_max - base_x) / nxk)
-                    elif px_proposed < x_min:
-                        s_point = min(s_point, (x_min - base_x) / nxk)
+                    s_point = 1.0
 
-                nyk = ny * k
-                if abs(nyk) > 1e-9:
-                    if py_proposed > y_max:
-                        s_point = min(s_point, (y_max - base_y) / nyk)
-                    elif py_proposed < y_min:
-                        s_point = min(s_point, (y_min - base_y) / nyk)
+                    # x-axis: if proposed point is outside, compute shrink to the
+                    # violated wall. Formula: we want base_x + nx*k*s ∈ [x_min, x_max],
+                    # so s = (boundary - base_x) / (nx*k) when the point is out on
+                    # that side. Both numerator and denominator have the same sign
+                    # in the out-of-bounds case, so s is positive.
+                    nxk = nx * k
+                    if abs(nxk) > 1e-9:
+                        if px_proposed > x_max:
+                            s_point = min(s_point, (x_max - base_x) / nxk)
+                        elif px_proposed < x_min:
+                            s_point = min(s_point, (x_min - base_x) / nxk)
 
-                if s_point < shrink:
-                    shrink = s_point
+                    nyk = ny * k
+                    if abs(nyk) > 1e-9:
+                        if py_proposed > y_max:
+                            s_point = min(s_point, (y_max - base_y) / nyk)
+                        elif py_proposed < y_min:
+                            s_point = min(s_point, (y_min - base_y) / nyk)
+
+                    if s_point < shrink:
+                        shrink = s_point
 
         # Floor the shrink so tiny diagrams remain legible
         shrink = max(shrink, 0.25)
         effective_max_px = DIAGRAM_MAX_PX * shrink
 
         # Draw pass
-        for mid, stations in data.items():
-            if mid not in member_geom:
-                continue
-            sx, sy, ex, ey, mdx, mdy, nx, ny = member_geom[mid]
+        is_deflection = (dtype == "δ")
 
-            baseline_pts = []
-            diagram_pts = []
-            for pct, val in stations:
-                t = pct / 100.0
-                px = sx + mdx * t
-                py = sy + mdy * t
-                baseline_pts.append((px, py))
-                offset = (val / max_val) * effective_max_px
-                diagram_pts.append((px + nx * offset, py + ny * offset))
+        def _draw_curves(data_source, is_min=False):
+            for mid, stations in data_source.items():
+                if mid not in member_geom:
+                    continue
+                sx, sy, ex, ey, mdx, mdy, nx, ny = member_geom[mid]
 
-            poly_pts = []
-            for pt in baseline_pts:
-                poly_pts.extend(pt)
-            for pt in reversed(diagram_pts):
-                poly_pts.extend(pt)
+                baseline_pts = []
+                diagram_pts = []
+                for pct, val in stations:
+                    t = pct / 100.0
+                    px = sx + mdx * t
+                    py = sy + mdy * t
+                    baseline_pts.append((px, py))
+                    offset = (val / max_val) * effective_max_px
+                    diagram_pts.append((px + nx * offset, py + ny * offset))
 
-            # For δ, skip the hatched fill — draw only the deflection curve.
-            # For M/V/N, draw the filled polygon as before.
-            is_deflection = (dtype == "δ")
+                poly_pts = []
+                for pt in baseline_pts:
+                    poly_pts.extend(pt)
+                for pt in reversed(diagram_pts):
+                    poly_pts.extend(pt)
 
-            if not is_deflection and len(poly_pts) >= 6:
-                self.create_polygon(
-                    *poly_pts, fill="", outline=color, width=2,
-                    tags=("diagram",))
-                self.create_polygon(
-                    *poly_pts, fill=color, outline="", stipple="gray25",
-                    tags=("diagram",))
+                # For δ and for envelopes, skip the filled polygon —
+                # draw only the curve line for clarity.
+                draw_fill = not is_deflection and not is_envelope
+                if draw_fill and len(poly_pts) >= 6:
+                    self.create_polygon(
+                        *poly_pts, fill="", outline=color, width=2,
+                        tags=("diagram",))
+                    self.create_polygon(
+                        *poly_pts, fill=color, outline="", stipple="gray25",
+                        tags=("diagram",))
 
-            curve_coords = []
-            for pt in diagram_pts:
-                curve_coords.extend(pt)
-            if len(curve_coords) >= 4:
-                curve_width = 3 if is_deflection else 2
-                self.create_line(*curve_coords, fill=color, width=curve_width,
-                                 tags=("diagram",))
+                curve_coords = []
+                for pt in diagram_pts:
+                    curve_coords.extend(pt)
+                if len(curve_coords) >= 4:
+                    curve_width = 3 if is_deflection else 2
+                    # Dashed for envelope min curve to distinguish from max
+                    if is_min:
+                        self.create_line(*curve_coords, fill=color,
+                                         width=curve_width, dash=(4, 3),
+                                         tags=("diagram",))
+                    else:
+                        self.create_line(*curve_coords, fill=color,
+                                         width=curve_width, tags=("diagram",))
 
-            # Peak label (+12 is a fixed pixel offset reserved in the bounds pad)
-            peak = max(stations, key=lambda s: abs(s[1]))
-            if abs(peak[1]) > 1e-6:
-                t = peak[0] / 100.0
-                px = sx + mdx * t
-                py = sy + mdy * t
-                offset = (peak[1] / max_val) * effective_max_px
-                lx = px + nx * (offset + 12 * (1 if offset >= 0 else -1))
-                ly = py + ny * (offset + 12 * (1 if offset >= 0 else -1))
-                unit = {"M": "kNm", "V": "kN", "N": "kN", "δ": "mm"}[dtype]
-                self._create_label(
-                    lx, ly, f"{peak[1]:.1f} {unit}",
-                    f"diag_{mid}_{dtype}", fill=color)
+                # Peak label — skip on the min curve when envelope so we
+                # only see one label per member per station.
+                if is_min:
+                    continue
+                peak = max(stations, key=lambda s: abs(s[1]))
+                if abs(peak[1]) > 1e-6:
+                    t = peak[0] / 100.0
+                    px = sx + mdx * t
+                    py = sy + mdy * t
+                    offset = (peak[1] / max_val) * effective_max_px
+                    lx = px + nx * (offset + 12 * (1 if offset >= 0 else -1))
+                    ly = py + ny * (offset + 12 * (1 if offset >= 0 else -1))
+                    unit = {"M": "kNm", "V": "kN", "N": "kN", "δ": "mm"}[dtype]
+                    self._create_label(
+                        lx, ly, f"{peak[1]:.1f} {unit}",
+                        f"diag_{mid}_{dtype}", fill=color)
+
+        _draw_curves(data, is_min=False)
+        if is_envelope:
+            _draw_curves(data_min, is_min=True)
 
     # ── Load drawing ──
 

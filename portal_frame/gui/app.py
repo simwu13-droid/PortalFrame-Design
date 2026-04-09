@@ -1878,10 +1878,25 @@ class PortalFrameApp(tk.Tk):
             values.append(display)
             self._diagram_display_to_name[display] = name
 
+        # Envelope entries (last in the dropdown)
+        if out.uls_envelope_curves is not None:
+            values.append("ULS Envelope")
+            self._diagram_display_to_name["ULS Envelope"] = "ULS Envelope"
+        if out.sls_envelope_curves is not None:
+            values.append("SLS Envelope")
+            self._diagram_display_to_name["SLS Envelope"] = "SLS Envelope"
+
         self.diagram_case_combo["values"] = values
 
     def _build_diagram_data(self):
-        """Build diagram data dict for the preview canvas."""
+        """Build diagram data dict for the preview canvas.
+
+        For normal cases/combos, returns {'data': {mid: [(pct, val), ...]},
+        'type': dtype, 'members': {mid: (n1, n2)}}.
+
+        For envelopes, also includes 'data_min' with the min curve. The
+        renderer draws both curves with a shared shrink factor.
+        """
         display = self.diagram_case_var.get()
         dtype = self.diagram_type_var.get()
         out = self._analysis_output
@@ -1892,6 +1907,37 @@ class PortalFrameApp(tk.Tk):
         if name is None:
             return None
 
+        attr = {"M": "moment", "V": "shear", "N": "axial", "δ": "dy_local"}[dtype]
+
+        # Envelope selections return both max and min curves
+        if name == "ULS Envelope" and out.uls_envelope_curves is not None:
+            env_max, env_min = out.uls_envelope_curves
+        elif name == "SLS Envelope" and out.sls_envelope_curves is not None:
+            env_max, env_min = out.sls_envelope_curves
+        else:
+            env_max = env_min = None
+
+        def _extract(cr):
+            return {
+                mid: [(s.position_pct, getattr(s, attr)) for s in mr.stations]
+                for mid, mr in cr.members.items()
+            }
+
+        members_map = {}
+        if self._analysis_topology:
+            for mid, mem in self._analysis_topology.members.items():
+                members_map[mid] = (mem.node_start, mem.node_end)
+
+        if env_max is not None:
+            return {
+                "data": _extract(env_max),
+                "data_min": _extract(env_min),
+                "type": dtype,
+                "members": members_map,
+                "is_envelope": True,
+            }
+
+        # Normal case/combo lookup
         if name in out.case_results:
             cr = out.case_results[name]
         elif name in out.combo_results:
@@ -1899,16 +1945,11 @@ class PortalFrameApp(tk.Tk):
         else:
             return None
 
-        attr = {"M": "moment", "V": "shear", "N": "axial", "δ": "dy_local"}[dtype]
-        data = {}
-        for mid, mr in cr.members.items():
-            data[mid] = [(s.position_pct, getattr(s, attr)) for s in mr.stations]
-
-        members_map = {}
-        if self._analysis_topology:
-            for mid, mem in self._analysis_topology.members.items():
-                members_map[mid] = (mem.node_start, mem.node_end)
-        return {"data": data, "type": dtype, "members": members_map}
+        return {
+            "data": _extract(cr),
+            "type": dtype,
+            "members": members_map,
+        }
 
     # ── Save / Load / Recent ──
 
