@@ -82,3 +82,4 @@ class AnalysisOutput:
     combo_results: dict[str, CaseResult]
     uls_envelope: dict[str, EnvelopeEntry] = field(default_factory=dict)
     sls_envelope: dict[str, EnvelopeEntry] = field(default_factory=dict)
+    combo_descriptions: dict[str, str] = field(default_factory=dict)

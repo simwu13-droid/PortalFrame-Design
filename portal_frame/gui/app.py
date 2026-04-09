@@ -50,6 +50,7 @@ class PortalFrameApp(tk.Tk):
 
         self._analysis_output = None
         self._analysis_topology = None
+        self._diagram_display_to_name = {"(none)": None}
 
         # Auto-generate default wind cases
         self._auto_generate_wind_cases()
@@ -1805,6 +1806,8 @@ class PortalFrameApp(tk.Tk):
             self.diagram_case_var.set("(none)")
         if hasattr(self, 'diagram_case_combo'):
             self.diagram_case_combo["values"] = ["(none)"]
+        if hasattr(self, '_diagram_display_to_name'):
+            self._diagram_display_to_name = {"(none)": None}
         # Clear the green "Analysis complete" status message
         if hasattr(self, 'status_label'):
             self.status_label.config(text="", fg=COLORS["fg_dim"])
@@ -1840,29 +1843,59 @@ class PortalFrameApp(tk.Tk):
         self._results_text.config(state="disabled")
 
     def _update_diagram_dropdowns(self):
-        """Populate diagram case dropdown with analysis cases and combos."""
+        """Populate diagram case dropdown with analysis cases and combos.
+
+        Builds human-friendly display strings for combos (e.g., 'ULS-1: 1.35G')
+        while maintaining a display_to_name map for reverse lookup.
+        """
         out = self._analysis_output
+        self._diagram_display_to_name = {"(none)": None}
+
         if out is None:
             self.diagram_case_combo["values"] = ["(none)"]
             return
 
         values = ["(none)"]
-        values.extend(sorted(out.case_results.keys()))
-        values.extend(sorted(out.combo_results.keys(),
-                             key=lambda n: (0 if n.startswith("ULS") else 1,
-                                            int(n.split("-")[1]) if "-" in n else 0)))
+
+        # Individual unfactored cases — name only
+        for name in sorted(out.case_results.keys()):
+            values.append(name)
+            self._diagram_display_to_name[name] = name
+
+        # Combinations — "name: description"
+        def _combo_sort_key(n):
+            # ULS first, then SLS; numeric order within each
+            prefix = 0 if n.startswith("ULS") else 1
+            try:
+                num = int(n.split("-")[1])
+            except (IndexError, ValueError):
+                num = 0
+            return (prefix, num)
+
+        for name in sorted(out.combo_results.keys(), key=_combo_sort_key):
+            desc = out.combo_descriptions.get(name, "")
+            display = f"{name}: {desc}" if desc else name
+            values.append(display)
+            self._diagram_display_to_name[display] = name
+
         self.diagram_case_combo["values"] = values
 
     def _build_diagram_data(self):
         """Build diagram data dict for the preview canvas."""
-        case_or_combo = self.diagram_case_var.get()
+        display = self.diagram_case_var.get()
         dtype = self.diagram_type_var.get()
         out = self._analysis_output
 
-        if case_or_combo in out.case_results:
-            cr = out.case_results[case_or_combo]
-        elif case_or_combo in out.combo_results:
-            cr = out.combo_results[case_or_combo]
+        # Translate display string back to actual case/combo name
+        name = self._diagram_display_to_name.get(display) if hasattr(
+            self, '_diagram_display_to_name') else display
+        if name is None:
+            return None
+
+        if name in out.case_results:
+            cr = out.case_results[name]
+        elif name in out.combo_results:
+            cr = out.combo_results[name]
         else:
             return None
 

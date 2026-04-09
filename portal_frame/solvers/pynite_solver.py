@@ -60,14 +60,17 @@ class PyNiteSolver(AnalysisSolver):
         # Build combinations from NZS 1170.0
         combos = self._get_combinations()
         combo_results = {}
+        combo_descriptions = {}
         for combo in combos:
             combo_results[combo.name] = combine_case_results(
                 case_results, combo.factors, combo.name
             )
+            combo_descriptions[combo.name] = combo.description
 
         self._output = AnalysisOutput(
             case_results=case_results,
             combo_results=combo_results,
+            combo_descriptions=combo_descriptions,
         )
         compute_envelopes(self._output)
 
