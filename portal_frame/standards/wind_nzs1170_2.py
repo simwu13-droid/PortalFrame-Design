@@ -301,7 +301,7 @@ def _compute_zone_loads(span, h, h_over_d, cp_i, kc_e, kc_i, qu, use_uplift):
     return zones
 
 
-def _mirror_zones(zones):
+def mirror_zones(zones):
     """Mirror zone list (measure from far end instead of near end)."""
     return [
         RafterZoneLoad(
@@ -310,6 +310,8 @@ def _mirror_zones(zones):
             pressure=z.pressure,
         ) for z in reversed(zones)
     ]
+
+_mirror_zones = mirror_zones  # backward compat alias
 
 
 def _split_zones_to_rafters(full_zones, split_pct=50.0):

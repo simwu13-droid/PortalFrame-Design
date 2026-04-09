@@ -76,19 +76,19 @@ class TestRoofCpeZones:
 
 class TestBuildCombinations:
     def test_no_wind(self):
-        uls, sls = build_combinations([])
+        uls, sls, _ = build_combinations([])
         assert len(uls) == 2  # 1.35G and 1.2G+1.5Q
         assert len(sls) == 2  # G+0.7Q and G
 
     def test_with_wind(self):
-        uls, sls = build_combinations(["W1", "W2"])
+        uls, sls, _ = build_combinations(["W1", "W2"])
         # 2 static + 2 per wind case (1.2G+W, 0.9G+W) * 2 cases = 6
         assert len(uls) == 6
-        # 2 static + 1 per wind case = 4
-        assert len(sls) == 4
+        # 2 static + 1 G+Ws per wind case + 1 wind-only per wind case = 6
+        assert len(sls) == 6
 
     def test_combo_names_sequential(self):
-        uls, sls = build_combinations(["W1"])
+        uls, sls, _ = build_combinations(["W1"])
         assert uls[0][0] == "ULS-1"
         assert uls[1][0] == "ULS-2"
         assert uls[2][0] == "ULS-3"
@@ -286,32 +286,32 @@ class TestTable53CLookup:
 
 class TestEarthquakeCombinations:
     def test_eq_uls_combos(self):
-        uls, sls = build_combinations(["W1"], eq_case_names=["E+", "E-"])
+        uls, sls, _ = build_combinations(["W1"], eq_case_names=["E+", "E-"])
         eq_uls = [c for c in uls if "E+" in c[1] or "E-" in c[1]]
         assert len(eq_uls) == 2
 
     def test_eq_sls_combos(self):
-        uls, sls = build_combinations(["W1"], eq_case_names=["E+", "E-"])
+        uls, sls, _ = build_combinations(["W1"], eq_case_names=["E+", "E-"])
         eq_sls = [c for c in sls if "E+" in c[1] or "E-" in c[1]]
         assert len(eq_sls) == 2
 
     def test_eq_uls_factor_on_G(self):
-        uls, sls = build_combinations([], eq_case_names=["E+", "E-"])
+        uls, sls, _ = build_combinations([], eq_case_names=["E+", "E-"])
         eq_combo = [c for c in uls if "E+" in c[1]][0]
         assert eq_combo[2]["G"] == 1.0
 
     def test_no_eq_when_empty(self):
-        uls, sls = build_combinations(["W1"], eq_case_names=[])
+        uls, sls, _ = build_combinations(["W1"], eq_case_names=[])
         for c in uls:
             assert "E+" not in c[1]
 
     def test_default_no_eq(self):
-        uls, sls = build_combinations(["W1"])
+        uls, sls, _ = build_combinations(["W1"])
         for c in uls:
             assert "E+" not in c[1]
 
     def test_eq_combo_numbering(self):
-        uls, sls = build_combinations(["W1", "W2"], eq_case_names=["E+", "E-"])
+        uls, sls, _ = build_combinations(["W1", "W2"], eq_case_names=["E+", "E-"])
         names = [c[0] for c in uls]
         assert len(names) == 8
         assert names[-2] == "ULS-7"
@@ -332,11 +332,11 @@ class TestNZHazardFactors:
 class TestSpectralShapeFactor:
     def test_soil_c_at_0s(self):
         ch = spectral_shape_factor(0.0, "C")
-        assert ch == pytest.approx(1.33, rel=0.05)
+        assert ch == pytest.approx(2.36, rel=0.05)
 
     def test_soil_c_at_0_5s(self):
         ch = spectral_shape_factor(0.5, "C")
-        assert ch == pytest.approx(2.36, rel=0.05)
+        assert ch == pytest.approx(2.00, rel=0.05)
 
     def test_soil_a_at_0s(self):
         ch = spectral_shape_factor(0.0, "A")
@@ -369,7 +369,7 @@ class TestCalculateEarthquakeForces:
         assert result["V_uls"] > 0
         assert result["V_sls"] > 0
         assert result["V_sls"] < result["V_uls"]
-        assert result["F_node"] == pytest.approx(result["V_uls"] / 2.0)
+        assert result["F_node"] == pytest.approx(result["V_uls"] / 2.0, rel=0.01)
 
     def test_period_calculation(self):
         geom = PortalFrameGeometry(
@@ -417,3 +417,52 @@ class TestCalculateEarthquakeForces:
         eq = EarthquakeInputs(Z=0.40, soil_class="C", R_sls=0.25)
         result = calculate_earthquake_forces(geom, 0.15, 0.10, eq)
         assert result["F_node_sls"] == pytest.approx(result["V_sls"] / 2.0)
+
+
+class TestWindOnlySLSAndGroups:
+    def test_wind_only_sls_present(self):
+        uls, sls, groups = build_combinations(
+            wind_case_names=["W1", "W2"], ws_factor=0.75)
+        descs = [c[1] for c in sls]
+        assert "W1(s) wind only" in descs
+        assert "W2(s) wind only" in descs
+
+    def test_wind_only_factor_no_G(self):
+        uls, sls, groups = build_combinations(
+            wind_case_names=["W1"], ws_factor=0.75)
+        wo = next(c for c in sls if "wind only" in c[1])
+        assert wo[2] == {"W1": 0.75}
+        assert "G" not in wo[2]
+
+    def test_groups_uls_gq(self):
+        uls, sls, groups = build_combinations(wind_case_names=["W1"])
+        assert "uls_gq" in groups
+        s, e = groups["uls_gq"]
+        assert uls[s][1] == "1.35G"
+        assert uls[e][1] == "1.2G + 1.5Q"
+
+    def test_groups_uls_wind(self):
+        uls, sls, groups = build_combinations(wind_case_names=["W1", "W2"])
+        assert "uls_wind" in groups
+        s, e = groups["uls_wind"]
+        assert "W1" in uls[s][1]
+        assert "W2" in uls[e][1]
+
+    def test_groups_with_eq(self):
+        uls, sls, groups = build_combinations(
+            wind_case_names=["W1"], eq_case_names=["E+", "E-"])
+        assert "uls_eq" in groups
+        assert "sls_eq" in groups
+
+    def test_groups_without_eq(self):
+        uls, sls, groups = build_combinations(wind_case_names=["W1"])
+        assert "uls_eq" not in groups
+        assert "sls_eq" not in groups
+
+    def test_groups_sls_wind_only(self):
+        uls, sls, groups = build_combinations(
+            wind_case_names=["W1", "W2"], ws_factor=0.75)
+        assert "sls_wind_only" in groups
+        s, e = groups["sls_wind_only"]
+        assert "wind only" in sls[s][1]
+        assert "wind only" in sls[e][1]

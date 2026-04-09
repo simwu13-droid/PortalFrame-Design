@@ -201,3 +201,21 @@ def test_no_jointloads_without_earthquake():
     cfg = create_example_config()
     output = build_from_config(cfg)
     assert "NODELOADS" not in output
+
+
+def test_load_case_groups_in_output():
+    """SpaceGass output contains LOAD CASE GROUPS."""
+    cfg = create_example_config()
+    output = build_from_config(cfg)
+    assert "LOAD CASE GROUPS" in output
+    lines = output.split("\n")
+    idx = next(i for i, l in enumerate(lines) if "LOAD CASE GROUPS" in l)
+    group_lines = []
+    for line in lines[idx+1:]:
+        if line.strip() == "" or line.startswith(("TITLES", "END")):
+            break
+        group_lines.append(line.strip())
+    assert any('"ULS"' in l for l in group_lines)
+    assert any('"SLS"' in l for l in group_lines)
+    assert any('"ULS-Wind"' in l for l in group_lines)
+    assert any('"SLS-Wind Only"' in l for l in group_lines)

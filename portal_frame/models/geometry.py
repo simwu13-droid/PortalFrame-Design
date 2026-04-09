@@ -76,6 +76,7 @@ class PortalFrameGeometry:
     roof_pitch_2: float | None = None  # Right rafter pitch (alpha2), None = same as roof_pitch
     # Legacy field — ignored if roof_pitch_2 is set
     apex_position_pct: float = 50.0
+    crane_rail_height: float | None = None  # Height of crane bracket nodes (m)
 
     # ------------------------------------------------------------------
     # Derived geometry properties
@@ -139,8 +140,60 @@ class PortalFrameGeometry:
     def to_topology(self) -> FrameTopology:
         """Dispatch to the appropriate topology builder."""
         if self.roof_type == "mono":
-            return self._build_mono_topology()
-        return self._build_gable_topology()
+            topo = self._build_mono_topology()
+        else:
+            topo = self._build_gable_topology()
+        return self._insert_crane_brackets(topo)
+
+    def _insert_crane_brackets(self, topo: FrameTopology) -> FrameTopology:
+        """Insert crane bracket nodes into columns, splitting each column at the bracket height.
+
+        Returns topo unchanged if crane_rail_height is None, <= 0, or >= eave_height.
+        """
+        h = self.crane_rail_height
+        if h is None or h <= 0 or h >= self.eave_height:
+            return topo
+
+        next_node_id = max(topo.nodes) + 1
+        next_member_id = max(topo.members) + 1
+
+        # Find column members that span the bracket height
+        columns_to_split = []
+        for m in list(topo.members.values()):
+            if m.section_id != 1:
+                continue
+            n_start = topo.nodes[m.node_start]
+            n_end = topo.nodes[m.node_end]
+            y_lo = min(n_start.y, n_end.y)
+            y_hi = max(n_start.y, n_end.y)
+            if y_lo < h < y_hi:
+                columns_to_split.append(m)
+
+        for m in columns_to_split:
+            n_start = topo.nodes[m.node_start]
+            n_end = topo.nodes[m.node_end]
+
+            # Bracket node at same x as the column, at crane_rail_height
+            bracket_node = Node(next_node_id, n_start.x, h)
+            topo.nodes[next_node_id] = bracket_node
+
+            # Determine which end is bottom and which is top
+            if n_start.y < n_end.y:
+                bot_id, top_id = m.node_start, m.node_end
+            else:
+                bot_id, top_id = m.node_end, m.node_start
+
+            # Remove original column member
+            del topo.members[m.id]
+
+            # Add two new segments: base-to-bracket and bracket-to-top
+            topo.members[next_member_id] = Member(next_member_id, bot_id, next_node_id, 1)
+            next_member_id += 1
+            topo.members[next_member_id] = Member(next_member_id, next_node_id, top_id, 1)
+            next_member_id += 1
+            next_node_id += 1
+
+        return topo
 
     def _build_gable_topology(self) -> FrameTopology:
         """Build a gable (pitched) 2D portal frame.

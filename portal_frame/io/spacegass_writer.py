@@ -51,14 +51,22 @@ class SpaceGassWriter:
             return "FFFFFR"
 
     def _build_case_map(self) -> dict:
-        """Build case numbering map for all load cases including EQ."""
+        """Build case numbering map for all load cases including EQ and crane."""
         case_map = {"G": 1, "Q": 2}
         next_case = 3
         for wc in self.loads.wind_cases:
             case_map[wc.name] = next_case
             next_case += 1
         case_map.update(self._eq_case_map)
+        # Advance past EQ cases
+        if self._eq_case_map:
+            next_case = max(self._eq_case_map.values()) + 1
+        case_map.update(self._crane_case_map)
         return case_map
+
+    def generate(self) -> str:
+        """Alias for write() — backward compatibility."""
+        return self.write()
 
     def write(self) -> str:
         """Generate the complete SpaceGass text file."""
@@ -83,6 +91,24 @@ class SpaceGassWriter:
             self._eq_case_map["E+"] = next_case
             self._eq_case_map["E-"] = next_case + 1
 
+        # Pre-compute crane case map
+        self._crane_case_map = {}
+        crane = self.loads.crane
+        if crane is not None:
+            next_case = 3 + len(self.loads.wind_cases)
+            if self._eq_case_map:
+                next_case = max(self._eq_case_map.values()) + 1
+            self._crane_case_map["Gc"] = next_case
+            next_case += 1
+            self._crane_case_map["Qc"] = next_case
+            next_case += 1
+            for tc in crane.transverse_uls:
+                self._crane_case_map[tc.name] = next_case
+                next_case += 1
+            for tc in crane.transverse_sls:
+                self._crane_case_map[tc.name] = next_case
+                next_case += 1
+
         parts = [
             self._header(),
             self._headings(),
@@ -95,6 +121,7 @@ class SpaceGassWriter:
             self._load_cases(),
             self._jointloads(),
             self._combinations(),
+            self._load_case_groups(),
             self._titles(),
             "END",
         ]
@@ -105,9 +132,9 @@ class SpaceGassWriter:
         lines.append("SPACE GASS Text File - Version 1420")
         lines.append("")
         lines.append(
-            "UNITS LENGTH:m, SECTION:m, STRENGTH:kPa, DENSITY:T/m^3, "
-            "TEMP:Celsius, FORCE:kN, MOMENT:kNm, MASS:T, ACC:g's, "
-            "TRANS:m, STRESS:kPa"
+            "UNITS LENGTH:m, SECTION:mm, STRENGTH:MPa, DENSITY:kg/m^3, "
+            "TEMP:Celsius, FORCE:kN, MOMENT:kNm, MASS:kg, ACC:g's, "
+            "TRANS:mm, STRESS:MPa"
         )
         lines.append("")
         return "\n".join(lines)
@@ -189,16 +216,19 @@ class SpaceGassWriter:
             m.id for m in self.topology.members.values() if m.section_id == 1
         )
 
-        # Identify left/right columns by x-position of their base node
-        left_col_id = None
-        right_col_id = None
+        # Identify left/right column groups by x-position of their nodes
+        # After crane bracket splitting, each side may have 2 column segments
+        left_col_ids = []
+        right_col_ids = []
         for mid in column_ids:
             mem = self.topology.members[mid]
-            base_node = self.topology.nodes[mem.node_start]
-            if base_node.x == 0.0:
-                left_col_id = mid
+            n1 = self.topology.nodes[mem.node_start]
+            n2 = self.topology.nodes[mem.node_end]
+            x = min(n1.x, n2.x)
+            if x == 0.0:
+                left_col_ids.append(mid)
             else:
-                right_col_id = mid
+                right_col_ids.append(mid)
 
         bay = self.bay_spacing
         lines = ["MEMBFORCES"]
@@ -236,18 +266,21 @@ class SpaceGassWriter:
                 return sl
 
             # Wall loads — horizontal (global X direction)
-            if wc.left_wall != 0 and left_col_id is not None:
-                sl = next_slice(left_col_id)
+            # Applied to ALL column segments on each side (handles crane bracket split)
+            if wc.left_wall != 0:
                 w = wc.left_wall * bay
-                lines.append(
-                    f"{cn},{left_col_id},{sl},G,%,0.0,100.0,{w:.4f},{w:.4f},0.0,0.0,0.0,0.0"
-                )
-            if wc.right_wall != 0 and right_col_id is not None:
-                sl = next_slice(right_col_id)
+                for col_id in left_col_ids:
+                    sl = next_slice(col_id)
+                    lines.append(
+                        f"{cn},{col_id},{sl},G,%,0.0,100.0,{w:.4f},{w:.4f},0.0,0.0,0.0,0.0"
+                    )
+            if wc.right_wall != 0:
                 w = -wc.right_wall * bay
-                lines.append(
-                    f"{cn},{right_col_id},{sl},G,%,0.0,100.0,{w:.4f},{w:.4f},0.0,0.0,0.0,0.0"
-                )
+                for col_id in right_col_ids:
+                    sl = next_slice(col_id)
+                    lines.append(
+                        f"{cn},{col_id},{sl},G,%,0.0,100.0,{w:.4f},{w:.4f},0.0,0.0,0.0,0.0"
+                    )
             # Rafter loads — normal to surface (local Y)
             if len(rafter_ids) == 2:
                 # Gable: left rafter gets left_rafter data, right rafter gets right_rafter data
@@ -280,28 +313,86 @@ class SpaceGassWriter:
         lines.append("")
         return "\n".join(lines)
 
+    def _get_bracket_nodes(self):
+        """Find crane bracket nodes: nodes at crane rail_height with y > 0."""
+        crane = self.loads.crane
+        if crane is None:
+            return []
+        h = crane.rail_height
+        bracket_nodes = [
+            n for n in self.topology.nodes.values()
+            if abs(n.y - h) < 0.01 and n.y > 0
+        ]
+        return sorted(bracket_nodes, key=lambda n: n.x)
+
     def _jointloads(self) -> str:
-        """Generate JOINTLOADS section for earthquake forces at eave nodes."""
-        if self._eq_result is None:
+        """Generate NODELOADS section for earthquake and crane forces."""
+        has_eq = self._eq_result is not None
+        has_crane = bool(self._crane_case_map)
+
+        if not has_eq and not has_crane:
             return ""
 
-        eave_nodes = sorted(self.topology.get_eave_nodes(), key=lambda n: n.x)
-        if len(eave_nodes) < 2:
-            return ""
-
-        F_uls = self._eq_result["F_node"]
         lines = ["NODELOADS"]
 
-        # Format: Case,Node,FX,FY,FZ,MX,MY,MZ,LoadCategory
-        # E+ case: +X force at each eave node
-        cn_pos = self._eq_case_map["E+"]
-        for node in eave_nodes:
-            lines.append(f"{cn_pos},{node.id},{F_uls:.4f},0.0,0.0,0.0,0.0,0.0,1")
+        # Earthquake loads — building mass at eave nodes, crane mass at bracket nodes
+        if has_eq:
+            eave_nodes = sorted(self.topology.get_eave_nodes(), key=lambda n: n.x)
+            if len(eave_nodes) >= 2:
+                F_uls = self._eq_result["F_node"]
+                F_sls = self._eq_result["F_node_sls"]
+                cn_pos = self._eq_case_map["E+"]
+                cn_neg = self._eq_case_map["E-"]
+                # Building seismic force at eave/knee nodes
+                for node in eave_nodes:
+                    lines.append(f"{cn_pos},{node.id},{F_uls:.4f},0.0,0.0,0.0,0.0,0.0,1")
+                for node in eave_nodes:
+                    lines.append(f"{cn_neg},{node.id},{-F_uls:.4f},0.0,0.0,0.0,0.0,0.0,1")
 
-        # E- case: -X force at each eave node
-        cn_neg = self._eq_case_map["E-"]
-        for node in eave_nodes:
-            lines.append(f"{cn_neg},{node.id},{-F_uls:.4f},0.0,0.0,0.0,0.0,0.0,1")
+                # Crane seismic force at bracket nodes
+                # F = Cd * (Gc + 0.6*Qc) / 2 per bracket
+                # 0.6 = companion action factor for crane live during EQ
+                crane = self.loads.crane
+                if crane is not None:
+                    gc_total = crane.dead_left + crane.dead_right
+                    qc_total = crane.live_left + crane.live_right
+                    crane_wt = gc_total + 0.6 * qc_total
+                    if crane_wt > 0:
+                        Cd_uls = self._eq_result["Cd_uls"]
+                        F_crane = Cd_uls * crane_wt / 2.0
+                        bracket_nodes = self._get_bracket_nodes()
+                        for node in bracket_nodes:
+                            lines.append(f"{cn_pos},{node.id},{F_crane:.4f},0.0,0.0,0.0,0.0,0.0,1")
+                        for node in bracket_nodes:
+                            lines.append(f"{cn_neg},{node.id},{-F_crane:.4f},0.0,0.0,0.0,0.0,0.0,1")
+
+        # Crane loads at bracket nodes
+        if has_crane:
+            crane = self.loads.crane
+            bracket_nodes = self._get_bracket_nodes()
+            if len(bracket_nodes) >= 2:
+                left_node = bracket_nodes[0]
+                right_node = bracket_nodes[-1]
+
+                # Gc — crane dead load (vertical, downward = -FY)
+                cn_gc = self._crane_case_map["Gc"]
+                lines.append(f"{cn_gc},{left_node.id},0.0,{-crane.dead_left:.4f},0.0,0.0,0.0,0.0,1")
+                lines.append(f"{cn_gc},{right_node.id},0.0,{-crane.dead_right:.4f},0.0,0.0,0.0,0.0,1")
+
+                # Qc — crane live load (vertical, downward = -FY)
+                cn_qc = self._crane_case_map["Qc"]
+                lines.append(f"{cn_qc},{left_node.id},0.0,{-crane.live_left:.4f},0.0,0.0,0.0,0.0,1")
+                lines.append(f"{cn_qc},{right_node.id},0.0,{-crane.live_right:.4f},0.0,0.0,0.0,0.0,1")
+
+                # Hc — transverse loads (horizontal, FX)
+                for tc in crane.transverse_uls:
+                    cn = self._crane_case_map[tc.name]
+                    lines.append(f"{cn},{left_node.id},{tc.left:.4f},0.0,0.0,0.0,0.0,0.0,1")
+                    lines.append(f"{cn},{right_node.id},{tc.right:.4f},0.0,0.0,0.0,0.0,0.0,1")
+                for tc in crane.transverse_sls:
+                    cn = self._crane_case_map[tc.name]
+                    lines.append(f"{cn},{left_node.id},{tc.left:.4f},0.0,0.0,0.0,0.0,0.0,1")
+                    lines.append(f"{cn},{right_node.id},{tc.right:.4f},0.0,0.0,0.0,0.0,0.0,1")
 
         lines.append("")
         return "\n".join(lines)
@@ -316,12 +407,21 @@ class SpaceGassWriter:
         if self._eq_result and self._eq_result["Cd_uls"] > 0:
             eq_sls_factor = self._eq_result["Cd_sls"] / self._eq_result["Cd_uls"]
 
-        uls_combos, sls_combos = build_combinations(
+        crane = self.loads.crane
+        has_crane = crane is not None
+        uls_combos, sls_combos, combo_groups = build_combinations(
             wind_case_names,
             ws_factor=self.loads.ws_factor,
             eq_case_names=eq_case_names,
             eq_sls_factor=eq_sls_factor,
+            crane_gc_name="Gc" if has_crane else None,
+            crane_qc_name="Qc" if has_crane else None,
+            crane_hc_uls_names=[c.name for c in crane.transverse_uls] if has_crane else None,
+            crane_hc_sls_names=[c.name for c in crane.transverse_sls] if has_crane else None,
         )
+        self._combo_groups = combo_groups
+        self._uls_count = len(uls_combos)
+        self._sls_count = len(sls_combos)
         uls_start = 101
         sls_start = 201
 
@@ -342,6 +442,44 @@ class SpaceGassWriter:
         lines.append("")
         return "\n".join(lines)
 
+    def _load_case_groups(self) -> str:
+        """Generate LOAD CASE GROUPS section for SpaceGass."""
+        if not hasattr(self, '_uls_count') or self._uls_count == 0:
+            return ""
+        groups = getattr(self, '_combo_groups', {})
+        uls_start = 101
+        sls_start = 201
+        uls_end = uls_start + self._uls_count - 1
+        sls_end = sls_start + self._sls_count - 1
+
+        lines = ["LOAD CASE GROUPS"]
+        gid = 1
+
+        # ULS parent group
+        lines.append(f'{gid},"ULS",{uls_start},-{uls_end}')
+        gid += 1
+        # ULS sub-groups
+        for gname, label in [("uls_gq", "ULS-GQ"), ("uls_wind", "ULS-Wind"),
+                              ("uls_eq", "ULS-EQ")]:
+            if gname in groups:
+                s, e = groups[gname]
+                lines.append(f'{gid},"{label}",{uls_start + s},-{uls_start + e}')
+                gid += 1
+
+        # SLS parent group
+        lines.append(f'{gid},"SLS",{sls_start},-{sls_end}')
+        gid += 1
+        # SLS sub-groups
+        for gname, label in [("sls_wind", "SLS-Wind"), ("sls_eq", "SLS-EQ"),
+                              ("sls_wind_only", "SLS-Wind Only")]:
+            if gname in groups:
+                s, e = groups[gname]
+                lines.append(f'{gid},"{label}",{sls_start + s},-{sls_start + e}')
+                gid += 1
+
+        lines.append("")
+        return "\n".join(lines)
+
     def _titles(self) -> str:
         """Generate TITLES section."""
         case_map = self._build_case_map()
@@ -356,6 +494,23 @@ class SpaceGassWriter:
                 lines.append(f"{cn},E+ - Earthquake positive")
             else:
                 lines.append(f"{cn},E- - Earthquake negative")
+        # Crane base load case titles
+        crane = self.loads.crane
+        if crane is not None:
+            cn_gc = self._crane_case_map.get("Gc")
+            if cn_gc is not None:
+                lines.append(f"{cn_gc},Gc - Crane Dead Load")
+            cn_qc = self._crane_case_map.get("Qc")
+            if cn_qc is not None:
+                lines.append(f"{cn_qc},Qc - Crane Live Load")
+            for i, tc in enumerate(crane.transverse_uls, 1):
+                cn = self._crane_case_map.get(tc.name)
+                if cn is not None:
+                    lines.append(f"{cn},{tc.name} - Crane Transverse ULS {i}")
+            for i, tc in enumerate(crane.transverse_sls, 1):
+                cn = self._crane_case_map.get(tc.name)
+                if cn is not None:
+                    lines.append(f"{cn},{tc.name} - Crane Transverse SLS {i}")
         for cname, (combo_num, cdesc) in self._combo_id_map.items():
             lines.append(f"{combo_num},{cname}: {cdesc}")
         lines.append("")

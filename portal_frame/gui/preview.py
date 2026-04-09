@@ -256,9 +256,25 @@ class FramePreview(tk.Canvas):
             self.create_line(*ns[2], *ns[3], fill=COLORS["frame_raf"], width=3)
             self.create_line(*ns[3], *ns[4], fill=COLORS["frame_raf"], width=3)
 
+        # Crane bracket nodes (if crane_rail_height is set)
+        crane_h = geom.get("crane_rail_height")
+        if crane_h is not None and 0 < crane_h < eave:
+            # Draw bracket markers on each column
+            bracket_left = tx(0, crane_h)
+            bracket_right = tx(span, crane_h)
+            ns["bracket_left"] = bracket_left
+            ns["bracket_right"] = bracket_right
+            br = 5
+            for bpt in [bracket_left, bracket_right]:
+                self.create_rectangle(
+                    bpt[0] - br, bpt[1] - br, bpt[0] + br, bpt[1] + br,
+                    fill=COLORS["warning"], outline=COLORS["fg_bright"], width=1)
+
         # Nodes
         r = 4
-        for pt in ns.values():
+        for key, pt in ns.items():
+            if isinstance(key, str) and key.startswith("bracket"):
+                continue  # bracket nodes already drawn as squares
             self.create_oval(pt[0]-r, pt[1]-r, pt[0]+r, pt[1]+r,
                              fill=COLORS["frame_node"], outline="")
 

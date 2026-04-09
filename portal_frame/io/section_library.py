@@ -9,10 +9,13 @@ from portal_frame.models.sections import CFS_Section
 
 
 # Library search paths (in order of priority)
+# When packaged with PyInstaller, also check the bundled data directory
+_BUNDLE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
 LIBRARY_SEARCH_PATHS = [
     r"C:\ProgramData\SPACE GASS\Custom Libraries",
     r"C:\Program Files\SPACE GASS 14.2\Standard Libraries",
     r"C:\Program Files (x86)\SPACE GASS 14.2\Standard Libraries",
+    os.path.join(_BUNDLE_DIR, "libraries"),  # bundled fallback
 ]
 
 # Known library files — custom first, then standard NZ cold-formed

@@ -2,6 +2,7 @@
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import json
 import math
 import os
 
@@ -18,14 +19,17 @@ from portal_frame.standards.earthquake_nzs1170_5 import (
 )
 from portal_frame.models.supports import SupportCondition
 from portal_frame.standards.wind_nzs1170_2 import (
-    WindCpInputs, generate_standard_wind_cases, get_surface_coefficients,
-    cfig, roof_cpe_zones, SIDE_WALL_CPE_ZONES,
+    get_surface_coefficients, cfig, roof_cpe_zones, mirror_zones,
 )
 from portal_frame.solvers.base import AnalysisRequest
 from portal_frame.solvers.spacegass import SpaceGassSolver
 
 
 class PortalFrameApp(tk.Tk):
+
+    _APP_DIR = os.path.join(os.path.expanduser("~"), ".portal_frame")
+    _RECENT_FILE = os.path.join(_APP_DIR, "recent.json")
+    _LAST_SESSION = os.path.join(_APP_DIR, "last_session.json")
 
     def __init__(self):
         super().__init__()
@@ -47,6 +51,10 @@ class PortalFrameApp(tk.Tk):
         # Auto-generate default wind cases
         self._auto_generate_wind_cases()
         self._update_preview()
+
+        # Auto-restore last session and handle window close
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._auto_restore()
 
     def _configure_styles(self):
         style = ttk.Style()
@@ -99,13 +107,14 @@ class PortalFrameApp(tk.Tk):
         self._tab_container = tk.Frame(left_outer, bg=COLORS["bg_panel"])
         self._tab_container.pack(fill="both", expand=True)
 
-        tab_names = ["Frame", "Wind", "Earthquake", "Combos"]
+        tab_names = ["Frame", "Wind", "Earthquake", "Crane", "Combos"]
         for name in tab_names:
             self._create_tab_page(name)
 
         self._build_frame_tab(self._tab_pages["Frame"])
         self._build_wind_tab(self._tab_pages["Wind"])
         self._build_earthquake_tab(self._tab_pages["Earthquake"])
+        self._build_crane_tab(self._tab_pages["Crane"])
         self._build_combos_tab(self._tab_pages["Combos"])
 
         self._select_tab("Frame")
@@ -155,6 +164,41 @@ class PortalFrameApp(tk.Tk):
             command=self._generate
         )
         self.generate_btn.pack(side="left")
+
+        tk.Button(
+            btn_row, text="  SAVE  ", font=FONT_BOLD,
+            fg=COLORS["fg_bright"], bg="#555555",
+            activebackground="#666666",
+            activeforeground=COLORS["fg_bright"],
+            relief="flat", cursor="hand2", padx=8, pady=8,
+            command=self._save_config
+        ).pack(side="left", padx=(8, 0))
+
+        tk.Button(
+            btn_row, text="  LOAD  ", font=FONT_BOLD,
+            fg=COLORS["fg_bright"], bg="#555555",
+            activebackground="#666666",
+            activeforeground=COLORS["fg_bright"],
+            relief="flat", cursor="hand2", padx=8, pady=8,
+            command=self._load_config
+        ).pack(side="left", padx=(4, 0))
+
+        self._recent_menu_btn = tk.Menubutton(
+            btn_row, text="  Recent  ", font=FONT_BOLD,
+            fg=COLORS["fg_bright"], bg="#555555",
+            activebackground="#666666",
+            activeforeground=COLORS["fg_bright"],
+            relief="flat", cursor="hand2", padx=8, pady=8,
+        )
+        self._recent_menu_btn.pack(side="left", padx=(4, 0))
+        self._recent_menu = tk.Menu(
+            self._recent_menu_btn, tearoff=0, font=FONT,
+            bg=COLORS["bg_panel"], fg=COLORS["fg"],
+            activebackground=COLORS["accent"],
+            activeforeground=COLORS["fg_bright"],
+        )
+        self._recent_menu_btn["menu"] = self._recent_menu
+        self._update_recent_menu()
 
         self.status_label = tk.Label(
             btn_row, text="", font=FONT, fg=COLORS["success"],
@@ -408,6 +452,10 @@ class PortalFrameApp(tk.Tk):
             self.pitch_warning_label.config(text="")
 
     def _build_geometry(self) -> PortalFrameGeometry:
+        crane_rail_height = None
+        if hasattr(self, 'crane_enabled_var') and self.crane_enabled_var.get():
+            crane_rail_height = self.crane_rail_height.get()
+
         if self.roof_type_var.get() == "mono":
             return PortalFrameGeometry(
                 span=self.span.get(),
@@ -415,6 +463,7 @@ class PortalFrameApp(tk.Tk):
                 roof_pitch=self.pitch.get(),
                 bay_spacing=self.bay.get(),
                 roof_type="mono",
+                crane_rail_height=crane_rail_height,
             )
         return PortalFrameGeometry(
             span=self.span.get(),
@@ -423,6 +472,7 @@ class PortalFrameApp(tk.Tk):
             bay_spacing=self.bay.get(),
             roof_type="gable",
             roof_pitch_2=self.pitch2.get(),
+            crane_rail_height=crane_rail_height,
         )
 
     # ── Wind Tab ──
@@ -595,9 +645,13 @@ class PortalFrameApp(tk.Tk):
         self.eq_mu.pack(fill="x", **pad)
         self.eq_mu.bind_change(self._update_eq_results)
 
-        self.eq_Sp = LabeledEntry(self.eq_content, "Sp (structural perf.)", 0.925, "")
+        self.eq_Sp = LabeledEntry(self.eq_content, "Sp ULS (structural perf.)", 0.925, "")
         self.eq_Sp.pack(fill="x", **pad)
         self.eq_Sp.bind_change(self._update_eq_results)
+
+        self.eq_Sp_sls = LabeledEntry(self.eq_content, "Sp SLS (Cl 4.4.4)", 0.7, "")
+        self.eq_Sp_sls.pack(fill="x", **pad)
+        self.eq_Sp_sls.bind_change(self._update_eq_results)
 
         self.eq_R_uls = LabeledEntry(self.eq_content, "R (ULS return period)", 1.0, "")
         self.eq_R_uls.pack(fill="x", **pad)
@@ -614,6 +668,10 @@ class PortalFrameApp(tk.Tk):
         self.eq_extra_mass = LabeledEntry(self.eq_content, "Extra seismic mass", 0.0, "kN")
         self.eq_extra_mass.pack(fill="x", **pad)
         self.eq_extra_mass.bind_change(self._update_eq_results)
+
+        self.eq_T1_override = LabeledEntry(self.eq_content, "T1 override (0=auto)", 0.0, "s")
+        self.eq_T1_override.pack(fill="x", **pad)
+        self.eq_T1_override.bind_change(self._update_eq_results)
 
         self._section_header(self.eq_content, "CALCULATED VALUES")
 
@@ -695,6 +753,7 @@ class PortalFrameApp(tk.Tk):
             geom = self._build_geometry()
             sw_kn = self._estimate_member_self_weight(geom)
 
+            t1_val = self.eq_T1_override.get()
             eq = EarthquakeInputs(
                 Z=self.eq_Z.get(),
                 soil_class=self.eq_soil.get(),
@@ -702,14 +761,22 @@ class PortalFrameApp(tk.Tk):
                 R_sls=self.eq_R_sls.get(),
                 mu=self.eq_mu.get(),
                 Sp=self.eq_Sp.get(),
+                Sp_sls=self.eq_Sp_sls.get(),
                 near_fault=self.eq_near_fault.get(),
                 extra_seismic_mass=self.eq_extra_mass.get() + sw_kn,
+                T1_override=t1_val if t1_val > 0 else 0.0,
             )
             result = calculate_earthquake_forces(
                 geom, self.dead_roof.get(), self.dead_wall.get(), eq,
             )
+            t1_val = self.eq_T1_override.get()
+            t1_label = f"T1 = {result['T1']:.3f} s"
+            if t1_val > 0:
+                t1_label += " (user override)"
+            else:
+                t1_label += " (auto)"
             text = (
-                f"T1 = {result['T1']:.3f} s\n"
+                f"{t1_label}\n"
                 f"Ch(T1) = {result['Ch']:.3f}\n"
                 f"k_mu = {result['k_mu']:.3f}\n"
                 f"Cd(T1) ULS = {result['Cd_uls']:.4f}\n"
@@ -723,9 +790,178 @@ class PortalFrameApp(tk.Tk):
                 f"F_node ULS = {result['F_node']:.2f} kN (per knee)\n"
                 f"F_node SLS = {result['F_node_sls']:.2f} kN (per knee)"
             )
+            # Show crane seismic contribution if crane is enabled
+            if hasattr(self, 'crane_enabled_var') and self.crane_enabled_var.get():
+                gc_total = self.crane_gc_left.get() + self.crane_gc_right.get()
+                qc_total = self.crane_qc_left.get() + self.crane_qc_right.get()
+                crane_wt = gc_total + 0.6 * qc_total
+                if crane_wt > 0:
+                    F_crane_uls = result['Cd_uls'] * crane_wt / 2.0
+                    F_crane_sls = result['Cd_sls'] * crane_wt / 2.0
+                    text += (
+                        f"\n--- Crane seismic (at bracket nodes) ---\n"
+                        f"Wt_crane = Gc + 0.6Qc = {gc_total:.1f} + 0.6x{qc_total:.1f}"
+                        f" = {crane_wt:.2f} kN\n"
+                        f"F_crane ULS = {F_crane_uls:.2f} kN (per bracket)\n"
+                        f"F_crane SLS = {F_crane_sls:.2f} kN (per bracket)"
+                    )
             self.eq_results_label.config(text=text)
         except Exception as e:
             self.eq_results_label.config(text=f"Error: {e}")
+
+    # ── Crane Tab ──
+
+    def _build_crane_tab(self, parent):
+        pad = {"padx": 10, "pady": (0, 2)}
+
+        self._section_header(parent, "GANTRY CRANE LOADING")
+
+        self.crane_enabled_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            parent, text="Enable Gantry Crane Loading",
+            variable=self.crane_enabled_var, font=FONT_BOLD,
+            fg=COLORS["fg"], bg=COLORS["bg_panel"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            activeforeground=COLORS["fg"],
+            command=self._on_crane_toggle,
+        ).pack(fill="x", padx=10, pady=(0, 6))
+
+        self.crane_content = tk.Frame(parent, bg=COLORS["bg_panel"])
+        # Initially hidden — shown on toggle
+
+        self._section_header(self.crane_content, "CRANE PARAMETERS")
+        self.crane_rail_height = LabeledEntry(
+            self.crane_content, "Rail Height", 3.0, "m")
+        self.crane_rail_height.pack(fill="x", **pad)
+        self.crane_rail_height.bind_change(self._on_crane_param_change)
+
+        self._section_header(self.crane_content, "CRANE DEAD LOAD (Gc) -- unfactored")
+        self.crane_gc_left = LabeledEntry(
+            self.crane_content, "Gc Left Bracket", 0.0, "kN")
+        self.crane_gc_left.pack(fill="x", **pad)
+        self.crane_gc_right = LabeledEntry(
+            self.crane_content, "Gc Right Bracket", 0.0, "kN")
+        self.crane_gc_right.pack(fill="x", **pad)
+
+        self._section_header(self.crane_content, "CRANE LIVE LOAD (Qc) -- unfactored")
+        self.crane_qc_left = LabeledEntry(
+            self.crane_content, "Qc Left Bracket", 0.0, "kN")
+        self.crane_qc_left.pack(fill="x", **pad)
+        self.crane_qc_right = LabeledEntry(
+            self.crane_content, "Qc Right Bracket", 0.0, "kN")
+        self.crane_qc_right.pack(fill="x", **pad)
+
+        # Transverse ULS
+        self._section_header(
+            self.crane_content,
+            "TRANSVERSE ULS (Hc) -- pre-factored from manufacturer")
+        self.crane_hc_uls_frame = tk.Frame(
+            self.crane_content, bg=COLORS["bg_panel"])
+        self.crane_hc_uls_frame.pack(fill="x", padx=10, pady=(0, 4))
+        self.crane_hc_uls_rows = []
+
+        uls_btn_row = tk.Frame(self.crane_content, bg=COLORS["bg_panel"])
+        uls_btn_row.pack(fill="x", padx=10, pady=(0, 6))
+        tk.Button(
+            uls_btn_row, text="+ Add ULS Row", font=FONT_SMALL,
+            fg=COLORS["fg_bright"], bg=COLORS["accent"],
+            activebackground=COLORS["accent_hover"],
+            relief="flat", cursor="hand2", padx=6, pady=2,
+            command=lambda: self._add_crane_hc_row(
+                self.crane_hc_uls_frame, self.crane_hc_uls_rows,
+                "Hc", len(self.crane_hc_uls_rows) + 1),
+        ).pack(side="left", padx=(0, 4))
+        tk.Button(
+            uls_btn_row, text="- Remove Last", font=FONT_SMALL,
+            fg=COLORS["fg_bright"], bg=COLORS["border"],
+            activebackground=COLORS["fg_dim"],
+            relief="flat", cursor="hand2", padx=6, pady=2,
+            command=lambda: self._remove_crane_hc_row(self.crane_hc_uls_rows),
+        ).pack(side="left")
+
+        # Transverse SLS
+        self._section_header(
+            self.crane_content,
+            "TRANSVERSE SLS (Hc) -- pre-factored from manufacturer")
+        self.crane_hc_sls_frame = tk.Frame(
+            self.crane_content, bg=COLORS["bg_panel"])
+        self.crane_hc_sls_frame.pack(fill="x", padx=10, pady=(0, 4))
+        self.crane_hc_sls_rows = []
+
+        sls_btn_row = tk.Frame(self.crane_content, bg=COLORS["bg_panel"])
+        sls_btn_row.pack(fill="x", padx=10, pady=(0, 6))
+        tk.Button(
+            sls_btn_row, text="+ Add SLS Row", font=FONT_SMALL,
+            fg=COLORS["fg_bright"], bg=COLORS["accent"],
+            activebackground=COLORS["accent_hover"],
+            relief="flat", cursor="hand2", padx=6, pady=2,
+            command=lambda: self._add_crane_hc_row(
+                self.crane_hc_sls_frame, self.crane_hc_sls_rows,
+                "Hcs", len(self.crane_hc_sls_rows) + 1),
+        ).pack(side="left", padx=(0, 4))
+        tk.Button(
+            sls_btn_row, text="- Remove Last", font=FONT_SMALL,
+            fg=COLORS["fg_bright"], bg=COLORS["border"],
+            activebackground=COLORS["fg_dim"],
+            relief="flat", cursor="hand2", padx=6, pady=2,
+            command=lambda: self._remove_crane_hc_row(self.crane_hc_sls_rows),
+        ).pack(side="left")
+
+    def _on_crane_toggle(self, *_):
+        if self.crane_enabled_var.get():
+            self.crane_content.pack(fill="x", padx=10)
+        else:
+            self.crane_content.pack_forget()
+        self.refresh_load_case_list()
+        self._update_preview()
+
+    def _on_crane_param_change(self, *_):
+        """Called when crane rail height or loads change."""
+        self.refresh_load_case_list()
+        self._update_preview()
+
+    def _add_crane_hc_row(self, frame, rows_list, prefix, idx):
+        """Add a transverse combo row."""
+        row_frame = tk.Frame(frame, bg=COLORS["bg_panel"])
+        row_frame.pack(fill="x", pady=1)
+
+        name_var = tk.StringVar(value=f"{prefix}{idx}")
+        left_var = tk.StringVar(value="0.0")
+        right_var = tk.StringVar(value="0.0")
+
+        tk.Entry(row_frame, textvariable=name_var, font=FONT_MONO, width=8,
+                 bg=COLORS["bg_input"], fg=COLORS["fg_bright"],
+                 insertbackground=COLORS["fg_bright"],
+                 relief="flat", highlightthickness=1,
+                 highlightcolor=COLORS["accent"],
+                 highlightbackground=COLORS["border"]).pack(side="left", padx=(0, 4))
+        tk.Label(row_frame, text="L:", font=FONT_SMALL, fg=COLORS["fg_dim"],
+                 bg=COLORS["bg_panel"]).pack(side="left")
+        tk.Entry(row_frame, textvariable=left_var, font=FONT_MONO, width=8,
+                 bg=COLORS["bg_input"], fg=COLORS["fg_bright"],
+                 insertbackground=COLORS["fg_bright"],
+                 relief="flat", highlightthickness=1,
+                 highlightcolor=COLORS["accent"],
+                 highlightbackground=COLORS["border"]).pack(side="left", padx=(2, 4))
+        tk.Label(row_frame, text="R:", font=FONT_SMALL, fg=COLORS["fg_dim"],
+                 bg=COLORS["bg_panel"]).pack(side="left")
+        tk.Entry(row_frame, textvariable=right_var, font=FONT_MONO, width=8,
+                 bg=COLORS["bg_input"], fg=COLORS["fg_bright"],
+                 insertbackground=COLORS["fg_bright"],
+                 relief="flat", highlightthickness=1,
+                 highlightcolor=COLORS["accent"],
+                 highlightbackground=COLORS["border"]).pack(side="left", padx=(2, 4))
+        tk.Label(row_frame, text="kN", font=FONT_SMALL, fg=COLORS["fg_dim"],
+                 bg=COLORS["bg_panel"]).pack(side="left")
+
+        rows_list.append((row_frame, name_var, left_var, right_var))
+
+    def _remove_crane_hc_row(self, rows_list):
+        """Remove the last transverse combo row."""
+        if rows_list:
+            row_frame, _, _, _ = rows_list.pop()
+            row_frame.destroy()
 
     # ── Combos Tab ──
 
@@ -899,17 +1135,12 @@ class PortalFrameApp(tk.Tk):
                 ))
             return zones
 
-        def _mirror_zones(zones):
-            return [
-                RafterZoneLoad(
-                    start_pct=round(100.0 - z.end_pct, 1),
-                    end_pct=round(100.0 - z.start_pct, 1),
-                    pressure=z.pressure,
-                ) for z in reversed(zones)
-            ]
-
         def _split_zones(full_zones, split_pct):
-            """Split full-span zones at the ridge into left/right rafter zones."""
+            """Split full-span zones at the ridge into left/right rafter zones.
+
+            NOTE: Not consolidated with wind_nzs1170_2._split_zones_to_rafters
+            which has micro-zone filtering (<0.05%) that would change output.
+            """
             left, right = [], []
             for z in full_zones:
                 if z.end_pct <= split_pct:
@@ -998,7 +1229,7 @@ class PortalFrameApp(tk.Tk):
                 full_zones = _build_full_zones(cpi_val, use_uplift)
 
                 if is_mono:
-                    rafter_zones = full_zones if is_LR else _mirror_zones(full_zones)
+                    rafter_zones = full_zones if is_LR else mirror_zones(full_zones)
                     cases.append(WindCase(
                         name=f"W{case_num}",
                         description=f"Crosswind {dir_label} - {desc_env}",
@@ -1014,7 +1245,7 @@ class PortalFrameApp(tk.Tk):
                         l_zones, r_zones = _split_zones(full_zones, split_pct)
                         left_role, right_role = "upwind", "downwind"
                     else:
-                        mirrored = _mirror_zones(full_zones)
+                        mirrored = mirror_zones(full_zones)
                         l_zones, r_zones = _split_zones(mirrored, split_pct)
                         left_role, right_role = "downwind", "upwind"
 
@@ -1089,6 +1320,8 @@ class PortalFrameApp(tk.Tk):
             "apex_x": geom_obj.apex_x,
             "ridge_height": geom_obj.ridge_height,
         }
+        if geom_obj.crane_rail_height is not None:
+            geom["crane_rail_height"] = geom_obj.crane_rail_height
         supports = (self.left_support.get(), self.right_support.get())
         loads = self._build_preview_loads()
         self.preview.update_frame(geom, supports, loads)
@@ -1107,6 +1340,13 @@ class PortalFrameApp(tk.Tk):
         if hasattr(self, 'eq_enabled_var') and self.eq_enabled_var.get():
             choices.append("E+ - Earthquake positive")
             choices.append("E- - Earthquake negative")
+        if hasattr(self, 'crane_enabled_var') and self.crane_enabled_var.get():
+            choices.append("Gc - Crane Dead")
+            choices.append("Qc - Crane Live")
+            for _, name_var, _, _ in self.crane_hc_uls_rows:
+                choices.append(f"{name_var.get()} - Crane Transverse ULS")
+            for _, name_var, _, _ in self.crane_hc_sls_rows:
+                choices.append(f"{name_var.get()} - Crane Transverse SLS")
         self.load_case_combo["values"] = choices
 
     def _build_preview_loads(self) -> dict:
@@ -1149,12 +1389,15 @@ class PortalFrameApp(tk.Tk):
         elif selected.startswith("E"):
             try:
                 geom_obj = self._build_geometry()
+                t1_val = self.eq_T1_override.get() if hasattr(self, 'eq_T1_override') else 0
                 eq = EarthquakeInputs(
                     Z=self.eq_Z.get(), soil_class=self.eq_soil.get(),
                     R_uls=self.eq_R_uls.get(), R_sls=self.eq_R_sls.get(),
                     mu=self.eq_mu.get(), Sp=self.eq_Sp.get(),
+                    Sp_sls=self.eq_Sp_sls.get(),
                     near_fault=self.eq_near_fault.get(),
                     extra_seismic_mass=self.eq_extra_mass.get(),
+                    T1_override=t1_val if t1_val > 0 else 0.0,
                 )
                 result = calculate_earthquake_forces(
                     geom_obj, self.dead_roof.get(), self.dead_wall.get(), eq,
@@ -1169,6 +1412,60 @@ class PortalFrameApp(tk.Tk):
                 for nid in eave_nodes:
                     point_loads.append({"node": nid, "fx": F, "label": f"E={'−' if is_negative else '+'}"})
                 return {"members": [], "point_loads": point_loads}
+            except Exception:
+                pass
+
+        elif selected.startswith("Gc ") or selected.startswith("Qc "):
+            # Crane vertical loads at bracket nodes
+            try:
+                geom_obj = self._build_geometry()
+                h = geom_obj.crane_rail_height
+                if h is not None and 0 < h < geom_obj.eave_height:
+                    # Bracket nodes: left at (0, h), right at (span, h)
+                    # Use node IDs 6 and 7 for bracket nodes in the preview
+                    if selected.startswith("Gc"):
+                        left_kn = self.crane_gc_left.get()
+                        right_kn = self.crane_gc_right.get()
+                    else:
+                        left_kn = self.crane_qc_left.get()
+                        right_kn = self.crane_qc_right.get()
+                    point_loads = []
+                    if left_kn != 0:
+                        point_loads.append({"node": "bracket_left", "fx": 0, "fy": -left_kn})
+                    if right_kn != 0:
+                        point_loads.append({"node": "bracket_right", "fx": 0, "fy": -right_kn})
+                    return {"members": [], "point_loads": point_loads}
+            except Exception:
+                pass
+
+        elif "Crane Transverse" in selected:
+            # Crane horizontal loads at bracket nodes
+            try:
+                geom_obj = self._build_geometry()
+                h = geom_obj.crane_rail_height
+                if h is not None and 0 < h < geom_obj.eave_height:
+                    case_name = selected.split(" - ")[0].strip()
+                    left_kn = 0.0
+                    right_kn = 0.0
+                    rows = (self.crane_hc_uls_rows if "ULS" in selected
+                            else self.crane_hc_sls_rows)
+                    for _, name_var, left_var, right_var in rows:
+                        if name_var.get() == case_name:
+                            try:
+                                left_kn = float(left_var.get())
+                            except ValueError:
+                                left_kn = 0.0
+                            try:
+                                right_kn = float(right_var.get())
+                            except ValueError:
+                                right_kn = 0.0
+                            break
+                    point_loads = []
+                    if left_kn != 0:
+                        point_loads.append({"node": "bracket_left", "fx": left_kn, "fy": 0})
+                    if right_kn != 0:
+                        point_loads.append({"node": "bracket_right", "fx": right_kn, "fy": 0})
+                    return {"members": [], "point_loads": point_loads}
             except Exception:
                 pass
 
@@ -1298,6 +1595,7 @@ class PortalFrameApp(tk.Tk):
 
             earthquake = None
             if self.eq_enabled_var.get():
+                t1_val = self.eq_T1_override.get()
                 earthquake = EarthquakeInputs(
                     Z=self.eq_Z.get(),
                     soil_class=self.eq_soil.get(),
@@ -1305,8 +1603,43 @@ class PortalFrameApp(tk.Tk):
                     R_sls=self.eq_R_sls.get(),
                     mu=self.eq_mu.get(),
                     Sp=self.eq_Sp.get(),
+                    Sp_sls=self.eq_Sp_sls.get(),
                     near_fault=self.eq_near_fault.get(),
                     extra_seismic_mass=self.eq_extra_mass.get(),
+                    T1_override=t1_val if t1_val > 0 else 0.0,
+                )
+
+            crane_inputs = None
+            if self.crane_enabled_var.get():
+                from portal_frame.models.crane import CraneTransverseCombo, CraneInputs
+                hc_uls = []
+                for _, name_var, left_var, right_var in self.crane_hc_uls_rows:
+                    try:
+                        hc_uls.append(CraneTransverseCombo(
+                            name=name_var.get(),
+                            left=float(left_var.get()),
+                            right=float(right_var.get()),
+                        ))
+                    except ValueError:
+                        pass
+                hc_sls = []
+                for _, name_var, left_var, right_var in self.crane_hc_sls_rows:
+                    try:
+                        hc_sls.append(CraneTransverseCombo(
+                            name=name_var.get(),
+                            left=float(left_var.get()),
+                            right=float(right_var.get()),
+                        ))
+                    except ValueError:
+                        pass
+                crane_inputs = CraneInputs(
+                    rail_height=self.crane_rail_height.get(),
+                    dead_left=self.crane_gc_left.get(),
+                    dead_right=self.crane_gc_right.get(),
+                    live_left=self.crane_qc_left.get(),
+                    live_right=self.crane_qc_right.get(),
+                    transverse_uls=hc_uls,
+                    transverse_sls=hc_sls,
                 )
 
             loads = LoadInput(
@@ -1317,6 +1650,7 @@ class PortalFrameApp(tk.Tk):
                 include_self_weight=self.self_weight_var.get(),
                 ws_factor=ws_factor,
                 earthquake=earthquake,
+                crane=crane_inputs,
             )
 
             topology = geom.to_topology()
@@ -1356,3 +1690,299 @@ class PortalFrameApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Generation Error", str(e))
             self.status_label.config(text=f"Error: {e}", fg=COLORS["error"])
+
+    # ── Save / Load / Recent ──
+
+    def _collect_config(self) -> dict:
+        """Serialize all GUI state to a config dict."""
+        cfg = {"version": 1}
+
+        cfg["geometry"] = {
+            "span": self.span.get(),
+            "eave_height": self.eave.get(),
+            "roof_pitch": self.pitch.get(),
+            "roof_pitch_2": self.pitch2.get(),
+            "bay_spacing": self.bay.get(),
+            "roof_type": self.roof_type_var.get(),
+            "building_depth": self.building_depth.get(),
+        }
+        cfg["sections"] = {
+            "column": self.col_section.get(),
+            "rafter": self.raf_section.get(),
+        }
+        cfg["supports"] = {
+            "left_base": self.left_support.get(),
+            "right_base": self.right_support.get(),
+        }
+        cfg["loads"] = {
+            "dead_load_roof": self.dead_roof.get(),
+            "dead_load_wall": self.dead_wall.get(),
+            "live_load_roof": self.live_roof.get(),
+            "include_self_weight": self.self_weight_var.get(),
+        }
+        cfg["wind"] = {
+            "qu": self.qu.get(),
+            "qs": self.qs.get(),
+            "kc_e": self.kc_e.get(),
+            "kc_i": self.kc_i.get(),
+            "cpi_uplift": float(self.cpi_uplift_var.get()),
+            "cpi_downward": float(self.cpi_downward_var.get()),
+            "windward_wall_cpe": float(self.cp_vars["cp_ww"].get()),
+        }
+        cfg["earthquake"] = {
+            "enabled": self.eq_enabled_var.get(),
+            "Z": self.eq_Z.get(),
+            "soil_class": self.eq_soil.get(),
+            "mu": self.eq_mu.get(),
+            "Sp": self.eq_Sp.get(),
+            "Sp_sls": self.eq_Sp_sls.get(),
+            "R_uls": self.eq_R_uls.get(),
+            "R_sls": self.eq_R_sls.get(),
+            "near_fault": self.eq_near_fault.get(),
+            "extra_mass": self.eq_extra_mass.get(),
+            "T1_override": self.eq_T1_override.get(),
+        }
+        cfg["crane"] = {
+            "enabled": self.crane_enabled_var.get(),
+            "rail_height": self.crane_rail_height.get(),
+            "gc_left": self.crane_gc_left.get(),
+            "gc_right": self.crane_gc_right.get(),
+            "qc_left": self.crane_qc_left.get(),
+            "qc_right": self.crane_qc_right.get(),
+            "transverse_uls": [],
+            "transverse_sls": [],
+        }
+        for _, nv, lv, rv in self.crane_hc_uls_rows:
+            try:
+                cfg["crane"]["transverse_uls"].append({
+                    "name": nv.get(),
+                    "left": float(lv.get()),
+                    "right": float(rv.get()),
+                })
+            except ValueError:
+                pass
+        for _, nv, lv, rv in self.crane_hc_sls_rows:
+            try:
+                cfg["crane"]["transverse_sls"].append({
+                    "name": nv.get(),
+                    "left": float(lv.get()),
+                    "right": float(rv.get()),
+                })
+            except ValueError:
+                pass
+        return cfg
+
+    def _apply_config(self, cfg: dict):
+        """Populate all GUI fields from a config dict."""
+        # Geometry — set roof type first (affects pitch2 visibility)
+        geo = cfg.get("geometry", {})
+        rt = geo.get("roof_type", "gable")
+        self.roof_type_var.set(rt)
+        self._on_roof_type_change()
+
+        self.span.set(geo.get("span", 12.0))
+        self.eave.set(geo.get("eave_height", 4.5))
+        self.pitch.set(geo.get("roof_pitch", 5.0))
+        self.pitch2.set(geo.get("roof_pitch_2", 5.0))
+        self.bay.set(geo.get("bay_spacing", 6.0))
+        self.building_depth.set(geo.get("building_depth", 24.0))
+
+        # Sections
+        sec = cfg.get("sections", {})
+        col = sec.get("column", "63020S2")
+        raf = sec.get("rafter", "650180295S2")
+        self.col_section.set(col)
+        self.raf_section.set(raf)
+        self._update_section_info()
+
+        # Supports
+        sup = cfg.get("supports", {})
+        self.left_support.set(sup.get("left_base", "pinned"))
+        self.right_support.set(sup.get("right_base", "pinned"))
+
+        # Loads
+        ld = cfg.get("loads", {})
+        self.dead_roof.set(ld.get("dead_load_roof", 0.15))
+        self.dead_wall.set(ld.get("dead_load_wall", 0.10))
+        self.live_roof.set(ld.get("live_load_roof", 0.25))
+        self.self_weight_var.set(ld.get("include_self_weight", True))
+
+        # Wind
+        w = cfg.get("wind", {})
+        self.qu.set(w.get("qu", 1.2))
+        self.qs.set(w.get("qs", 0.9))
+        self.kc_e.set(w.get("kc_e", 0.8))
+        self.kc_i.set(w.get("kc_i", 1.0))
+        self.cpi_uplift_var.set(str(w.get("cpi_uplift", 0.2)))
+        self.cpi_downward_var.set(str(w.get("cpi_downward", -0.3)))
+        self.cp_vars["cp_ww"].set(str(w.get("windward_wall_cpe", 0.7)))
+
+        # Earthquake
+        eq = cfg.get("earthquake", {})
+        self.eq_enabled_var.set(eq.get("enabled", False))
+        self.eq_Z.set(eq.get("Z", 0.40))
+        self.eq_soil.set(eq.get("soil_class", "C"))
+        self.eq_mu.set(eq.get("mu", 1.25))
+        self.eq_Sp.set(eq.get("Sp", 0.925))
+        self.eq_Sp_sls.set(eq.get("Sp_sls", 0.7))
+        self.eq_R_uls.set(eq.get("R_uls", 1.0))
+        self.eq_R_sls.set(eq.get("R_sls", 0.25))
+        self.eq_near_fault.set(eq.get("near_fault", 1.0))
+        self.eq_extra_mass.set(eq.get("extra_mass", 0.0))
+        self.eq_T1_override.set(eq.get("T1_override", 0.0))
+        self._on_eq_toggle()
+
+        # Crane
+        cr = cfg.get("crane", {})
+        self.crane_enabled_var.set(cr.get("enabled", False))
+        self.crane_rail_height.set(cr.get("rail_height", 3.0))
+        self.crane_gc_left.set(cr.get("gc_left", 0.0))
+        self.crane_gc_right.set(cr.get("gc_right", 0.0))
+        self.crane_qc_left.set(cr.get("qc_left", 0.0))
+        self.crane_qc_right.set(cr.get("qc_right", 0.0))
+
+        # Clear existing transverse rows and rebuild
+        while self.crane_hc_uls_rows:
+            self._remove_crane_hc_row(self.crane_hc_uls_rows)
+        while self.crane_hc_sls_rows:
+            self._remove_crane_hc_row(self.crane_hc_sls_rows)
+
+        for row_data in cr.get("transverse_uls", []):
+            self._add_crane_hc_row(
+                self.crane_hc_uls_frame, self.crane_hc_uls_rows,
+                "Hc", len(self.crane_hc_uls_rows) + 1)
+            _, nv, lv, rv = self.crane_hc_uls_rows[-1]
+            nv.set(row_data.get("name", ""))
+            lv.set(str(row_data.get("left", 0.0)))
+            rv.set(str(row_data.get("right", 0.0)))
+
+        for row_data in cr.get("transverse_sls", []):
+            self._add_crane_hc_row(
+                self.crane_hc_sls_frame, self.crane_hc_sls_rows,
+                "Hcs", len(self.crane_hc_sls_rows) + 1)
+            _, nv, lv, rv = self.crane_hc_sls_rows[-1]
+            nv.set(row_data.get("name", ""))
+            lv.set(str(row_data.get("left", 0.0)))
+            rv.set(str(row_data.get("right", 0.0)))
+
+        self._on_crane_toggle()
+
+        # Regenerate wind cases and update preview
+        self._auto_generate_wind_cases()
+        self._update_preview()
+
+    def _save_config(self):
+        """Save current configuration to a JSON file."""
+        try:
+            cfg = self._collect_config()
+            filepath = filedialog.asksaveasfilename(
+                title="Save Configuration",
+                defaultextension=".json",
+                filetypes=[("JSON Config", "*.json"), ("All Files", "*.*")],
+                initialfile="portal_config.json",
+            )
+            if filepath:
+                with open(filepath, "w") as f:
+                    json.dump(cfg, f, indent=2)
+                self._add_recent(filepath)
+                self.status_label.config(
+                    text=f"Config saved: {os.path.basename(filepath)}",
+                    fg=COLORS["success"]
+                )
+        except Exception as e:
+            messagebox.showerror("Save Error", str(e))
+
+    def _load_config(self):
+        """Load configuration from a JSON file."""
+        filepath = filedialog.askopenfilename(
+            title="Load Configuration",
+            filetypes=[("JSON Config", "*.json"), ("All Files", "*.*")],
+        )
+        if filepath:
+            self._open_recent(filepath)
+
+    def _open_recent(self, path):
+        """Load a specific config file by path."""
+        try:
+            with open(path, "r") as f:
+                cfg = json.load(f)
+            self._apply_config(cfg)
+            self._add_recent(path)
+            self.status_label.config(
+                text=f"Loaded: {os.path.basename(path)}",
+                fg=COLORS["success"]
+            )
+        except FileNotFoundError:
+            messagebox.showerror("Load Error", f"File not found:\n{path}")
+            # Remove from recent list if file no longer exists
+            recent = self._load_recent_list()
+            recent = [p for p in recent if p != path]
+            self._save_recent_list(recent)
+            self._update_recent_menu()
+        except (json.JSONDecodeError, Exception) as e:
+            messagebox.showerror("Load Error", str(e))
+
+    def _load_recent_list(self) -> list:
+        """Read the recent files list from disk."""
+        try:
+            with open(self._RECENT_FILE, "r") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        return []
+
+    def _save_recent_list(self, recent: list):
+        """Write the recent files list to disk."""
+        try:
+            os.makedirs(self._APP_DIR, exist_ok=True)
+            with open(self._RECENT_FILE, "w") as f:
+                json.dump(recent, f, indent=2)
+        except Exception:
+            pass
+
+    def _add_recent(self, path):
+        """Add a path to the recent list, trim to 10, save, and update menu."""
+        path = os.path.abspath(path)
+        recent = self._load_recent_list()
+        # Remove if already present, then prepend
+        recent = [p for p in recent if p != path]
+        recent.insert(0, path)
+        recent = recent[:10]
+        self._save_recent_list(recent)
+        self._update_recent_menu()
+
+    def _update_recent_menu(self):
+        """Rebuild the Recent dropdown menu from the recent files list."""
+        self._recent_menu.delete(0, "end")
+        recent = self._load_recent_list()
+        if not recent:
+            self._recent_menu.add_command(label="(no recent files)", state="disabled")
+            return
+        for path in recent:
+            display = os.path.basename(path)
+            self._recent_menu.add_command(
+                label=display,
+                command=lambda p=path: self._open_recent(p),
+            )
+
+    def _on_close(self):
+        """Auto-save session state on window close."""
+        try:
+            cfg = self._collect_config()
+            os.makedirs(self._APP_DIR, exist_ok=True)
+            with open(self._LAST_SESSION, "w") as f:
+                json.dump(cfg, f, indent=2)
+        except Exception:
+            pass
+        self.destroy()
+
+    def _auto_restore(self):
+        """Restore last session state on startup."""
+        try:
+            with open(self._LAST_SESSION, "r") as f:
+                cfg = json.load(f)
+            self._apply_config(cfg)
+        except (FileNotFoundError, json.JSONDecodeError, Exception):
+            pass

@@ -33,13 +33,14 @@ portal_frame/
   models/          Pure dataclasses — no I/O, no standards logic
     geometry.py      Node, Member, FrameTopology, PortalFrameGeometry
     sections.py      CFS_Section
-    loads.py         RafterZoneLoad, WindCase, EarthquakeInputs, LoadInput
+    loads.py         RafterZoneLoad, WindCase, EarthquakeInputs, CraneInputs, LoadInput
+    crane.py         CraneTransverseCombo, CraneInputs
     supports.py      SupportCondition
   standards/       NZ code calculations — pure functions, no I/O
     utils.py         lerp() shared interpolation
     wind_nzs1170_2.py           Wind pressure tables & 8-case generation
     combinations_nzs1170_0.py   ULS/SLS load combinations + LoadCombination dataclass
-    earthquake_nzs1170_5.py     Placeholder (NZS 1170.5:2004)
+    earthquake_nzs1170_5.py     NZS 1170.5:2004 equivalent static method
   io/              File I/O — reading and writing
     section_library.py   XML library parsing (find, parse, load, get)
     spacegass_writer.py  SpaceGass v14 text output (SpaceGassWriter class)
@@ -50,13 +51,13 @@ portal_frame/
   gui/             Tkinter desktop GUI
     theme.py         COLORS, FONT constants
     widgets.py       LabeledEntry, LabeledCombo
-    dialogs.py       CrosswindZoneDialog, WindCaseTable
+    dialogs.py       WindSurfacePanel (surface-based Cp,e table with Walls/Roof tabs)
     preview.py       FramePreview canvas (2D rendering with loads)
     app.py           PortalFrameApp main window, tab orchestration, generate flow
     tabs/            (empty — tabs currently built inline in app.py)
   cli.py           CLI entry point
   run_gui.py       GUI entry point
-tests/             28 unit tests (standards, models, output integration)
+tests/             119 unit tests (standards, models, output, crane integration)
 ```
 
 **Backward-compatible wrappers** (root level):
@@ -86,6 +87,8 @@ tests/             28 unit tests (standards, models, output integration)
 - Version line must be `SPACE GASS Text File - Version 1420`
 - SECTIONS must reference the library by name (e.g., `1,"63020S2","FS"`) — NOT inline property definitions. This is required for 3D section rendering in SpaceGass.
 - MEMBFORCES column order: `Case,Mem,Sl,Ax,Un,St,Fi,Xs,Xf,Ys,Yf,Zs,Zf` — values grouped by axis direction (start,finish pairs), NOT by position.
+- UNITS line requires ALL 11 categories. ACC unit must be `g's` (with apostrophe), NOT `g` or `m/sec^2`. See spacegass.com/manual for valid values.
+- LOAD CASE GROUPS section groups ULS (101+) and SLS (201+) with sub-groups (ULS-GQ, ULS-Wind, ULS-EQ, SLS-Wind, SLS-EQ, SLS-Wind Only)
 
 ### Section Libraries
 - Primary library: `C:\ProgramData\SPACE GASS\Custom Libraries\LIBRARY_SG14_SECTION_FS.slsc` (Formsteel "FS" library)
@@ -134,6 +137,7 @@ tests/             28 unit tests (standards, models, output integration)
 
 ### Implementation
 - `standards/earthquake_nzs1170_5.py`: `NZ_HAZARD_FACTORS` (19 locations), `_CH_TABLE` (5 soil classes), `spectral_shape_factor()`, `calculate_earthquake_forces()`
+- `_CH_TABLE` uses NON-BRACKETED values from Table 3.1 (equivalent static method). Bracketed values are for modal response spectrum only. Classes B-E plateau at the non-bracketed value for T=0 to ~0.3-0.6s.
 - `standards/combinations_nzs1170_0.py`: `eq_case_names` param on `build_combinations()` adds `1.0G + E+/E-` (ULS) and `G + E(s)` (SLS)
 - `io/spacegass_writer.py`: NODELOADS section with `Case,Node,FX,FY,FZ,MX,MY,MZ,LoadCategory` (9 columns, verified in SpaceGass v14.25)
 - GUI Earthquake tab: enable/disable, location dropdown (auto-fills Z), soil class, ductility presets, live calculated values
@@ -147,7 +151,7 @@ k_mu: if T1 >= 0.7s -> k_mu = mu; if T1 < 0.7s -> k_mu = (mu-1)*T1/0.7 + 1
 T1 = 1.25 * 0.085 * h_n^0.75  (steel MRF, Clause 4.1.2.1)
 Floor: Cd(T1) >= max(0.03, Z*R*0.02)
 EQ ULS combo factor on G = 1.0 (not 1.2); Q drops out (psi_c=0 for roofs)
-SLS: Cd_sls = Ch(T1) * Z * R_sls * N (no Sp or k_mu reduction)
+SLS: Cd_sls = Ch(T1) * Z * R_sls * N * Sp_sls / k_mu_sls  (Sp_sls=0.7 per Cl 4.4.4, k_mu_sls=1.0)
 Forces split equally to eave nodes: F_node = V/2
 ```
 
@@ -157,13 +161,29 @@ Forces split equally to eave nodes: F_node = V/2
 - LoadCategory is an integer (e.g. `1`), NOT empty
 
 ## Testing
-- Unit tests: `python -m pytest tests/ -v` (78 tests covering standards, models, output integration)
+- Unit tests: `python -m pytest tests/ -v` (119 tests covering standards, models, output, crane)
 - GUI launch test: `python -m portal_frame.run_gui &`, wait a few seconds, then `tasklist | grep python`
 - SpaceGass output files must be opened in SpaceGass v14.25 to verify format correctness.
 - Output verification: generate with both old wrapper and new package, `diff` must show identical output.
 
 ## Design Spec
 - Full architecture design: `docs/superpowers/specs/2026-04-01-architecture-restructure-design.md`
+
+## Crane Loading
+
+**Status: IMPLEMENTED** — gantry crane with bracket nodes on columns.
+
+### Implementation
+- `models/crane.py`: `CraneTransverseCombo`, `CraneInputs` (dead/live/transverse per bracket)
+- Topology: `_insert_crane_brackets()` splits columns at rail height, adding 2 nodes + 2 members
+- Writer: Gc, Qc, Hc cases as NODELOADS at bracket nodes. Wind wall loads applied to ALL column segments (not just one)
+- Combinations: with/without crane sets (crane not always at this frame)
+- Crane seismic: F_crane = Cd × (Gc + 0.6×Qc) / 2 per bracket node (NOT at eave nodes)
+- GUI: Crane tab with enable/disable, rail height, Gc/Qc per bracket, dynamic transverse ULS/SLS rows
+
+## Packaging
+- `pyinstaller build.spec --clean -y` builds single .exe to `dist/PortalFrameGenerator.exe`
+- Section library: tries SpaceGass install path first, falls back to bundled copy via `sys._MEIPASS`
 
 ## External References
 - NZ loading standards: `C:\Users\CadWork4\Formsteel\Formsteel Engineers - Documents\Simon\_3.0 NZS & REFERENCE DOCUMENTS\STANDARDS - Loading ASNZS1170\`
