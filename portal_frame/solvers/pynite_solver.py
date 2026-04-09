@@ -366,8 +366,10 @@ class PyNiteSolver(AnalysisSolver):
                 axial = -model.members[name].axial(x, "LC")
                 shear = model.members[name].shear("Fy", x, "LC")
                 moment = -model.members[name].moment("Mz", x, "LC")
-                # Local-y deflection in mm (PyNite returns metres)
-                dy_local = model.members[name].deflection('dy', x, "LC") * 1000
+                # Local-y deflection in mm (PyNite returns metres).
+                # Negate so positive = sagging (into frame interior), matching
+                # the convention already used for axial and moment extraction.
+                dy_local = -model.members[name].deflection('dy', x, "LC") * 1000
                 stations.append(MemberStationResult(
                     position=x, position_pct=pct,
                     axial=axial, shear=shear, moment=moment,
