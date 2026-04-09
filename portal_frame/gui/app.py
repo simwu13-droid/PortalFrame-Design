@@ -138,7 +138,7 @@ class PortalFrameApp(tk.Tk):
             load_bar, textvariable=self.load_case_var,
             values=["(none)"], state="readonly", font=FONT_MONO, width=30)
         self.load_case_combo.pack(side="left", padx=4)
-        self.load_case_combo.bind("<<ComboboxSelected>>", lambda _: self._update_preview())
+        self.load_case_combo.bind("<<ComboboxSelected>>", lambda _: self._draw_preview())
         self.load_case_combo.bind("<Button-1>", lambda _: self.refresh_load_case_list())
 
         tk.Label(load_bar, text="  Diagram:", font=FONT, fg=COLORS["fg"],
@@ -150,7 +150,7 @@ class PortalFrameApp(tk.Tk):
             values=["(none)"], state="readonly", font=FONT_MONO, width=22)
         self.diagram_case_combo.pack(side="left", padx=4)
         self.diagram_case_combo.bind("<<ComboboxSelected>>",
-                                      lambda _: self._update_preview())
+                                      lambda _: self._draw_preview())
 
         self.diagram_type_var = tk.StringVar(value="M")
         self.diagram_type_combo = ttk.Combobox(
@@ -158,7 +158,7 @@ class PortalFrameApp(tk.Tk):
             values=["M", "V", "N"], state="readonly", font=FONT_MONO, width=4)
         self.diagram_type_combo.pack(side="left", padx=4)
         self.diagram_type_combo.bind("<<ComboboxSelected>>",
-                                      lambda _: self._update_preview())
+                                      lambda _: self._draw_preview())
 
         right.rowconfigure(1, weight=1)
 
@@ -443,6 +443,7 @@ class PortalFrameApp(tk.Tk):
 
         self.live_roof = LabeledEntry(parent, "Live Load - Roof (Q)", 0.25, "kPa")
         self.live_roof.pack(fill="x", **pad)
+        self.live_roof.bind_change(self._on_frame_change)
 
         self.self_weight_var = tk.BooleanVar(value=True)
         tk.Checkbutton(
@@ -451,7 +452,8 @@ class PortalFrameApp(tk.Tk):
             fg=COLORS["fg"], bg=COLORS["bg_panel"],
             selectcolor=COLORS["bg_input"],
             activebackground=COLORS["bg_panel"],
-            activeforeground=COLORS["fg"]
+            activeforeground=COLORS["fg"],
+            command=self._on_frame_change
         ).pack(fill="x", padx=10, pady=(0, 4))
 
     def _on_frame_change(self, *_):
@@ -461,6 +463,7 @@ class PortalFrameApp(tk.Tk):
 
     def _on_section_change(self, *_):
         """Section selection changed — update info display and EQ results."""
+        self._invalidate_analysis()
         self._update_section_info()
         self._update_eq_results()
 
@@ -786,6 +789,7 @@ class PortalFrameApp(tk.Tk):
         return col_wt + raf_wt
 
     def _update_eq_results(self, *_):
+        self._invalidate_analysis()
         if not self.eq_enabled_var.get():
             return
         try:
@@ -1073,7 +1077,7 @@ class PortalFrameApp(tk.Tk):
                         break
             except Exception:
                 pass
-        self._update_preview()
+        self._draw_preview()
 
     def _auto_generate_wind_cases(self):
         """Populate the surface table with Cp,e values from NZS 1170.2 lookup."""
@@ -1349,6 +1353,19 @@ class PortalFrameApp(tk.Tk):
         return cases
 
     def _update_preview(self, *_):
+        """Called when inputs change — invalidates stale analysis and redraws.
+
+        Use this from input-change callbacks only. For display-only refresh
+        (load case dropdown, diagram selection), call _draw_preview() directly.
+        """
+        self._invalidate_analysis()
+        self._draw_preview()
+
+    def _draw_preview(self, *_):
+        """Redraw the preview canvas without touching analysis state.
+
+        Use this for display-only refresh (combo selection). Does not invalidate.
+        """
         geom_obj = self._build_geometry()
         geom = {
             "span": geom_obj.span,
@@ -1743,6 +1760,9 @@ class PortalFrameApp(tk.Tk):
     def _analyse(self):
         """Run PyNite analysis on current inputs."""
         try:
+            # Clear any stale results first — if solve fails mid-way, we won't
+            # leave old results visible.
+            self._invalidate_analysis()
             request = self._build_analysis_request()
             self._analysis_topology = request.topology
 
@@ -1758,7 +1778,7 @@ class PortalFrameApp(tk.Tk):
             self._analysis_output = solver.output
             self._update_results_panel()
             self._update_diagram_dropdowns()
-            self._update_preview()
+            self._draw_preview()
 
             self.status_label.config(
                 text="Analysis complete", fg=COLORS["success"]
@@ -1770,14 +1790,24 @@ class PortalFrameApp(tk.Tk):
             self.status_label.config(text=f"Analysis error: {e}", fg=COLORS["error"])
 
     def _invalidate_analysis(self):
-        """Clear stale analysis results when inputs change."""
+        """Clear stale analysis results when inputs change.
+
+        Called from input change callbacks to prevent the user from mistakenly
+        applying outdated analysis results to design.
+        """
         self._analysis_output = None
+        self._analysis_topology = None
         if hasattr(self, '_results_text'):
             self._results_text.config(state="normal")
             self._results_text.delete("1.0", "end")
             self._results_text.config(state="disabled")
         if hasattr(self, 'diagram_case_var'):
             self.diagram_case_var.set("(none)")
+        if hasattr(self, 'diagram_case_combo'):
+            self.diagram_case_combo["values"] = ["(none)"]
+        # Clear the green "Analysis complete" status message
+        if hasattr(self, 'status_label'):
+            self.status_label.config(text="", fg=COLORS["fg_dim"])
 
     def _update_results_panel(self):
         """Display envelope results in the summary text widget."""
