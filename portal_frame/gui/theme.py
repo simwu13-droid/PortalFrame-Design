@@ -21,6 +21,11 @@ COLORS = {
     "frame_load":   "#dcdcaa",
     "frame_node":   "#ffffff",
     "frame_support":"#ce9178",
+    "diagram_moment":    "#e06c75",
+    "diagram_shear":     "#c678dd",
+    "diagram_axial":     "#e5c07b",
+    "analyse_btn":       "#2d7d46",
+    "analyse_btn_hover": "#38a055",
 }
 
 FONT_FAMILY = "Segoe UI"

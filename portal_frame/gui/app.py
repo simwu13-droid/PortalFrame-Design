@@ -48,6 +48,9 @@ class PortalFrameApp(tk.Tk):
         # Build UI
         self._build_ui()
 
+        self._analysis_output = None
+        self._analysis_topology = None
+
         # Auto-generate default wind cases
         self._auto_generate_wind_cases()
         self._update_preview()
@@ -138,6 +141,25 @@ class PortalFrameApp(tk.Tk):
         self.load_case_combo.bind("<<ComboboxSelected>>", lambda _: self._update_preview())
         self.load_case_combo.bind("<Button-1>", lambda _: self.refresh_load_case_list())
 
+        tk.Label(load_bar, text="  Diagram:", font=FONT, fg=COLORS["fg"],
+                 bg=COLORS["bg_panel"]).pack(side="left", padx=(16, 4))
+
+        self.diagram_case_var = tk.StringVar(value="(none)")
+        self.diagram_case_combo = ttk.Combobox(
+            load_bar, textvariable=self.diagram_case_var,
+            values=["(none)"], state="readonly", font=FONT_MONO, width=22)
+        self.diagram_case_combo.pack(side="left", padx=4)
+        self.diagram_case_combo.bind("<<ComboboxSelected>>",
+                                      lambda _: self._update_preview())
+
+        self.diagram_type_var = tk.StringVar(value="M")
+        self.diagram_type_combo = ttk.Combobox(
+            load_bar, textvariable=self.diagram_type_var,
+            values=["M", "V", "N"], state="readonly", font=FONT_MONO, width=4)
+        self.diagram_type_combo.pack(side="left", padx=4)
+        self.diagram_type_combo.bind("<<ComboboxSelected>>",
+                                      lambda _: self._update_preview())
+
         right.rowconfigure(1, weight=1)
 
         self.preview = FramePreview(right, width=400, height=300)
@@ -152,6 +174,13 @@ class PortalFrameApp(tk.Tk):
         )
         self.summary_label.pack(fill="x", padx=8, pady=(8, 4))
 
+        self._results_text = tk.Text(
+            bottom, font=FONT_MONO, fg=COLORS["fg"],
+            bg=COLORS["bg_input"], height=8, width=60,
+            relief="flat", state="disabled", wrap="none",
+        )
+        self._results_text.pack(fill="x", padx=8, pady=(0, 4))
+
         btn_row = tk.Frame(bottom, bg=COLORS["bg_panel"])
         btn_row.pack(fill="x", padx=8, pady=(0, 8))
 
@@ -164,6 +193,16 @@ class PortalFrameApp(tk.Tk):
             command=self._generate
         )
         self.generate_btn.pack(side="left")
+
+        self.analyse_btn = tk.Button(
+            btn_row, text="  ANALYSE (PyNite)  ", font=FONT_BOLD,
+            fg=COLORS["fg_bright"], bg=COLORS["analyse_btn"],
+            activebackground=COLORS["analyse_btn_hover"],
+            activeforeground=COLORS["fg_bright"],
+            relief="flat", cursor="hand2", padx=16, pady=8,
+            command=self._analyse
+        )
+        self.analyse_btn.pack(side="left", padx=(8, 0))
 
         tk.Button(
             btn_row, text="  SAVE  ", font=FONT_BOLD,
@@ -1324,7 +1363,14 @@ class PortalFrameApp(tk.Tk):
             geom["crane_rail_height"] = geom_obj.crane_rail_height
         supports = (self.left_support.get(), self.right_support.get())
         loads = self._build_preview_loads()
-        self.preview.update_frame(geom, supports, loads)
+
+        diagram = None
+        if (self._analysis_output is not None and
+                hasattr(self, 'diagram_case_var') and
+                self.diagram_case_var.get() != "(none)"):
+            diagram = self._build_diagram_data()
+
+        self.preview.update_frame(geom, supports, loads, diagram)
         self._update_summary()
 
     def refresh_load_case_list(self):
@@ -1564,108 +1610,111 @@ class PortalFrameApp(tk.Tk):
                  f"Ridge: {ridge:.2f}m  |  {pitch_info}"
         )
 
+    def _build_analysis_request(self):
+        """Collect all GUI inputs and return an AnalysisRequest."""
+        col_name = self.col_section.get()
+        raf_name = self.raf_section.get()
+
+        if not col_name or col_name not in self.section_library:
+            raise ValueError("Please select a valid column section.")
+        if not raf_name or raf_name not in self.section_library:
+            raise ValueError("Please select a valid rafter section.")
+
+        col_sec = self.section_library[col_name]
+        raf_sec = self.section_library[raf_name]
+
+        geom = self._build_geometry()
+
+        supports = SupportCondition(
+            left_base=self.left_support.get(),
+            right_base=self.right_support.get(),
+        )
+
+        wind_cases = self._synthesize_wind_cases()
+
+        qu_val = self.qu.get()
+        qs_val = self.qs.get()
+        ws_factor = qs_val / qu_val if qu_val > 0 else 0.75
+
+        earthquake = None
+        if self.eq_enabled_var.get():
+            t1_val = self.eq_T1_override.get()
+            earthquake = EarthquakeInputs(
+                Z=self.eq_Z.get(),
+                soil_class=self.eq_soil.get(),
+                R_uls=self.eq_R_uls.get(),
+                R_sls=self.eq_R_sls.get(),
+                mu=self.eq_mu.get(),
+                Sp=self.eq_Sp.get(),
+                Sp_sls=self.eq_Sp_sls.get(),
+                near_fault=self.eq_near_fault.get(),
+                extra_seismic_mass=self.eq_extra_mass.get(),
+                T1_override=t1_val if t1_val > 0 else 0.0,
+            )
+
+        crane_inputs = None
+        if self.crane_enabled_var.get():
+            from portal_frame.models.crane import CraneTransverseCombo, CraneInputs
+            hc_uls = []
+            for _, name_var, left_var, right_var in self.crane_hc_uls_rows:
+                try:
+                    hc_uls.append(CraneTransverseCombo(
+                        name=name_var.get(),
+                        left=float(left_var.get()),
+                        right=float(right_var.get()),
+                    ))
+                except ValueError:
+                    pass
+            hc_sls = []
+            for _, name_var, left_var, right_var in self.crane_hc_sls_rows:
+                try:
+                    hc_sls.append(CraneTransverseCombo(
+                        name=name_var.get(),
+                        left=float(left_var.get()),
+                        right=float(right_var.get()),
+                    ))
+                except ValueError:
+                    pass
+            crane_inputs = CraneInputs(
+                rail_height=self.crane_rail_height.get(),
+                dead_left=self.crane_gc_left.get(),
+                dead_right=self.crane_gc_right.get(),
+                live_left=self.crane_qc_left.get(),
+                live_right=self.crane_qc_right.get(),
+                transverse_uls=hc_uls,
+                transverse_sls=hc_sls,
+            )
+
+        loads = LoadInput(
+            dead_load_roof=self.dead_roof.get(),
+            dead_load_wall=self.dead_wall.get(),
+            live_load_roof=self.live_roof.get(),
+            wind_cases=wind_cases,
+            include_self_weight=self.self_weight_var.get(),
+            ws_factor=ws_factor,
+            earthquake=earthquake,
+            crane=crane_inputs,
+        )
+
+        topology = geom.to_topology()
+
+        return AnalysisRequest(
+            topology=topology,
+            column_section=col_sec,
+            rafter_section=raf_sec,
+            supports=supports,
+            load_input=loads,
+            span=geom.span,
+            eave_height=geom.eave_height,
+            roof_pitch=geom.roof_pitch,
+            bay_spacing=geom.bay_spacing,
+        )
+
     def _generate(self):
         """Collect all inputs and generate the SpaceGass file via solver interface."""
         try:
-            col_name = self.col_section.get()
-            raf_name = self.raf_section.get()
-
-            if not col_name or col_name not in self.section_library:
-                messagebox.showerror("Error", "Please select a valid column section.")
-                return
-            if not raf_name or raf_name not in self.section_library:
-                messagebox.showerror("Error", "Please select a valid rafter section.")
-                return
-
-            col_sec = self.section_library[col_name]
-            raf_sec = self.section_library[raf_name]
-
+            request = self._build_analysis_request()
             geom = self._build_geometry()
-
-            supports = SupportCondition(
-                left_base=self.left_support.get(),
-                right_base=self.right_support.get(),
-            )
-
-            wind_cases = self._synthesize_wind_cases()
-
-            qu_val = self.qu.get()
-            qs_val = self.qs.get()
-            ws_factor = qs_val / qu_val if qu_val > 0 else 0.75
-
-            earthquake = None
-            if self.eq_enabled_var.get():
-                t1_val = self.eq_T1_override.get()
-                earthquake = EarthquakeInputs(
-                    Z=self.eq_Z.get(),
-                    soil_class=self.eq_soil.get(),
-                    R_uls=self.eq_R_uls.get(),
-                    R_sls=self.eq_R_sls.get(),
-                    mu=self.eq_mu.get(),
-                    Sp=self.eq_Sp.get(),
-                    Sp_sls=self.eq_Sp_sls.get(),
-                    near_fault=self.eq_near_fault.get(),
-                    extra_seismic_mass=self.eq_extra_mass.get(),
-                    T1_override=t1_val if t1_val > 0 else 0.0,
-                )
-
-            crane_inputs = None
-            if self.crane_enabled_var.get():
-                from portal_frame.models.crane import CraneTransverseCombo, CraneInputs
-                hc_uls = []
-                for _, name_var, left_var, right_var in self.crane_hc_uls_rows:
-                    try:
-                        hc_uls.append(CraneTransverseCombo(
-                            name=name_var.get(),
-                            left=float(left_var.get()),
-                            right=float(right_var.get()),
-                        ))
-                    except ValueError:
-                        pass
-                hc_sls = []
-                for _, name_var, left_var, right_var in self.crane_hc_sls_rows:
-                    try:
-                        hc_sls.append(CraneTransverseCombo(
-                            name=name_var.get(),
-                            left=float(left_var.get()),
-                            right=float(right_var.get()),
-                        ))
-                    except ValueError:
-                        pass
-                crane_inputs = CraneInputs(
-                    rail_height=self.crane_rail_height.get(),
-                    dead_left=self.crane_gc_left.get(),
-                    dead_right=self.crane_gc_right.get(),
-                    live_left=self.crane_qc_left.get(),
-                    live_right=self.crane_qc_right.get(),
-                    transverse_uls=hc_uls,
-                    transverse_sls=hc_sls,
-                )
-
-            loads = LoadInput(
-                dead_load_roof=self.dead_roof.get(),
-                dead_load_wall=self.dead_wall.get(),
-                live_load_roof=self.live_roof.get(),
-                wind_cases=wind_cases,
-                include_self_weight=self.self_weight_var.get(),
-                ws_factor=ws_factor,
-                earthquake=earthquake,
-                crane=crane_inputs,
-            )
-
-            topology = geom.to_topology()
-
-            request = AnalysisRequest(
-                topology=topology,
-                column_section=col_sec,
-                rafter_section=raf_sec,
-                supports=supports,
-                load_input=loads,
-                span=geom.span,
-                eave_height=geom.eave_height,
-                roof_pitch=geom.roof_pitch,
-                bay_spacing=geom.bay_spacing,
-            )
 
             solver = SpaceGassSolver()
             solver.build_model(request)
@@ -1690,6 +1739,113 @@ class PortalFrameApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Generation Error", str(e))
             self.status_label.config(text=f"Error: {e}", fg=COLORS["error"])
+
+    def _analyse(self):
+        """Run PyNite analysis on current inputs."""
+        try:
+            request = self._build_analysis_request()
+            self._analysis_topology = request.topology
+
+            from portal_frame.solvers.pynite_solver import PyNiteSolver
+            solver = PyNiteSolver()
+            solver.build_model(request)
+
+            self.status_label.config(text="Analysing...", fg=COLORS["warning"])
+            self.update_idletasks()
+
+            solver.solve()
+
+            self._analysis_output = solver.output
+            self._update_results_panel()
+            self._update_diagram_dropdowns()
+            self._update_preview()
+
+            self.status_label.config(
+                text="Analysis complete", fg=COLORS["success"]
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Analysis Error", str(e))
+            self.status_label.config(text=f"Analysis error: {e}", fg=COLORS["error"])
+
+    def _invalidate_analysis(self):
+        """Clear stale analysis results when inputs change."""
+        self._analysis_output = None
+        if hasattr(self, '_results_text'):
+            self._results_text.config(state="normal")
+            self._results_text.delete("1.0", "end")
+            self._results_text.config(state="disabled")
+        if hasattr(self, 'diagram_case_var'):
+            self.diagram_case_var.set("(none)")
+
+    def _update_results_panel(self):
+        """Display envelope results in the summary text widget."""
+        out = self._analysis_output
+        if out is None:
+            return
+
+        lines = []
+        if out.uls_envelope:
+            lines.append("ULS Envelope:")
+            for key, label in [("max_moment", "Max M+"), ("min_moment", "Max M-"),
+                               ("max_shear", "Max V"), ("min_axial", "Max N(c)")]:
+                if key in out.uls_envelope:
+                    e = out.uls_envelope[key]
+                    unit = "kNm" if "moment" in key else "kN"
+                    lines.append(f"  {label:8s} = {e.value:>8.1f} {unit}  "
+                                 f"({e.combo_name})  M{e.member_id} @ {e.position_pct:.0f}%")
+
+        if out.sls_envelope:
+            lines.append("SLS Envelope:")
+            for key, label in [("max_dy", "Max dy"), ("max_dx", "Max dx")]:
+                if key in out.sls_envelope:
+                    e = out.sls_envelope[key]
+                    lines.append(f"  {label:8s} = {e.value:>8.1f} mm   "
+                                 f"({e.combo_name})")
+
+        self._results_text.config(state="normal")
+        self._results_text.delete("1.0", "end")
+        self._results_text.insert("1.0", "\n".join(lines))
+        self._results_text.config(state="disabled")
+
+    def _update_diagram_dropdowns(self):
+        """Populate diagram case dropdown with analysis cases and combos."""
+        out = self._analysis_output
+        if out is None:
+            self.diagram_case_combo["values"] = ["(none)"]
+            return
+
+        values = ["(none)"]
+        values.extend(sorted(out.case_results.keys()))
+        values.extend(sorted(out.combo_results.keys(),
+                             key=lambda n: (0 if n.startswith("ULS") else 1,
+                                            int(n.split("-")[1]) if "-" in n else 0)))
+        self.diagram_case_combo["values"] = values
+
+    def _build_diagram_data(self):
+        """Build diagram data dict for the preview canvas."""
+        case_or_combo = self.diagram_case_var.get()
+        dtype = self.diagram_type_var.get()
+        out = self._analysis_output
+
+        if case_or_combo in out.case_results:
+            cr = out.case_results[case_or_combo]
+        elif case_or_combo in out.combo_results:
+            cr = out.combo_results[case_or_combo]
+        else:
+            return None
+
+        attr = {"M": "moment", "V": "shear", "N": "axial"}[dtype]
+        data = {}
+        for mid, mr in cr.members.items():
+            data[mid] = [(s.position_pct, getattr(s, attr)) for s in mr.stations]
+
+        members_map = {}
+        if self._analysis_topology:
+            for mid, mem in self._analysis_topology.members.items():
+                members_map[mid] = (mem.node_start, mem.node_end)
+        return {"data": data, "type": dtype, "members": members_map}
 
     # ── Save / Load / Recent ──
 
