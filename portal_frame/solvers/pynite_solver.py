@@ -366,9 +366,12 @@ class PyNiteSolver(AnalysisSolver):
                 axial = -model.members[name].axial(x, "LC")
                 shear = model.members[name].shear("Fy", x, "LC")
                 moment = -model.members[name].moment("Mz", x, "LC")
+                # Local-y deflection in mm (PyNite returns metres)
+                dy_local = model.members[name].deflection('dy', x, "LC") * 1000
                 stations.append(MemberStationResult(
                     position=x, position_pct=pct,
                     axial=axial, shear=shear, moment=moment,
+                    dy_local=dy_local,
                 ))
 
             mr = MemberResult(member_id=mid, stations=stations)

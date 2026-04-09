@@ -7,9 +7,10 @@ from portal_frame.gui.theme import COLORS, FONT_SMALL
 
 
 DIAGRAM_COLORS = {
-    "M": "#e06c75",
-    "V": "#c678dd",
-    "N": "#e5c07b",
+    "M": "#e06c75",   # Red-pink for moment
+    "V": "#c678dd",   # Purple for shear
+    "N": "#e5c07b",   # Gold for axial
+    "δ": "#61afef",   # Blue for deflection
 }
 DIAGRAM_MAX_PX = 60
 
@@ -409,7 +410,7 @@ class FramePreview(tk.Canvas):
             dcolor = DIAGRAM_COLORS.get(dtype, "#e06c75")
             ly += 16
             self.create_line(lx, ly, lx + 20, ly, fill=dcolor, width=2)
-            label_map = {"M": "Moment", "V": "Shear", "N": "Axial"}
+            label_map = {"M": "Moment", "V": "Shear", "N": "Axial", "δ": "Deflection"}
             self.create_text(lx + 25, ly, text=label_map.get(dtype, dtype),
                              fill=COLORS["fg_dim"], font=FONT_SMALL, anchor="w")
 
@@ -572,7 +573,7 @@ class FramePreview(tk.Canvas):
                 offset = (peak[1] / max_val) * effective_max_px
                 lx = px + nx * (offset + 12 * (1 if offset >= 0 else -1))
                 ly = py + ny * (offset + 12 * (1 if offset >= 0 else -1))
-                unit = {"M": "kNm", "V": "kN", "N": "kN"}[dtype]
+                unit = {"M": "kNm", "V": "kN", "N": "kN", "δ": "mm"}[dtype]
                 self._create_label(
                     lx, ly, f"{peak[1]:.1f} {unit}",
                     f"diag_{mid}_{dtype}", fill=color)

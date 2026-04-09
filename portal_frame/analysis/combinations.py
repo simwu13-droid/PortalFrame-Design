@@ -18,16 +18,17 @@ def combine_case_results(
     for mid, ref_mr in ref_case.members.items():
         stations = []
         for j, ref_st in enumerate(ref_mr.stations):
-            axial = shear = moment = 0.0
+            axial = shear = moment = dy_local = 0.0
             for cname, factor in factors.items():
                 if cname in case_results and mid in case_results[cname].members:
                     st = case_results[cname].members[mid].stations[j]
                     axial += factor * st.axial
                     shear += factor * st.shear
                     moment += factor * st.moment
+                    dy_local += factor * st.dy_local
             stations.append(MemberStationResult(
                 ref_st.position, ref_st.position_pct,
-                axial, shear, moment,
+                axial, shear, moment, dy_local,
             ))
         mr = MemberResult(mid, stations)
         mr.compute_extremes()

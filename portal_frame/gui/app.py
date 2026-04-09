@@ -156,7 +156,7 @@ class PortalFrameApp(tk.Tk):
         self.diagram_type_var = tk.StringVar(value="M")
         self.diagram_type_combo = ttk.Combobox(
             load_bar, textvariable=self.diagram_type_var,
-            values=["M", "V", "N"], state="readonly", font=FONT_MONO, width=4)
+            values=["M", "V", "N", "δ"], state="readonly", font=FONT_MONO, width=4)
         self.diagram_type_combo.pack(side="left", padx=4)
         self.diagram_type_combo.bind("<<ComboboxSelected>>",
                                       lambda _: self._draw_preview())
@@ -1899,7 +1899,7 @@ class PortalFrameApp(tk.Tk):
         else:
             return None
 
-        attr = {"M": "moment", "V": "shear", "N": "axial"}[dtype]
+        attr = {"M": "moment", "V": "shear", "N": "axial", "δ": "dy_local"}[dtype]
         data = {}
         for mid, mr in cr.members.items():
             data[mid] = [(s.position_pct, getattr(s, attr)) for s in mr.stations]

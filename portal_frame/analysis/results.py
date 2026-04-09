@@ -5,12 +5,13 @@ from dataclasses import dataclass, field
 
 @dataclass
 class MemberStationResult:
-    """Forces at a single station along a member."""
+    """Forces and deflections at a single station along a member."""
     position: float       # Distance from member start (m)
     position_pct: float   # 0-100%
     axial: float          # kN, +ve = tension
     shear: float          # kN
     moment: float         # kNm
+    dy_local: float = 0.0 # mm, member-local y deflection (perpendicular to member)
 
 
 @dataclass

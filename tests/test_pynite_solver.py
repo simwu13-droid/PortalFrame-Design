@@ -306,3 +306,41 @@ def test_portal_asymmetric_wind_equilibrium():
 
     total_rxn_fy = sum(r.fy for r in w1_case.reactions.values())
     assert abs(total_rxn_fy) > 0.1, "Should have vertical reactions from rafter wind"
+
+
+def test_beam_gravity_midspan_deflection():
+    """Simply supported beam: midspan deflection = 5wL^4 / (384 EI)."""
+    req = _make_beam_request(span=10.0, w_dead=2.0, bay=5.0)
+    solver = PyNiteSolver()
+    solver.build_model(req)
+    solver.solve()
+
+    out = solver.output
+    g_case = out.case_results["G"]
+    mr = g_case.members[1]
+
+    # w = 2.0 * 5.0 = 10 kN/m, L = 10m
+    # E = 200 GPa = 200e6 kN/m^2
+    # Iz = 5e6 mm^4 = 5e6 * 1e-12 m^4 = 5e-6 m^4
+    # delta_max = 5wL^4 / (384 EI) = 5 * 10 * 10^4 / (384 * 200e6 * 5e-6)
+    #           = 500000 / 384000 = 1.302 m = 1302 mm
+    # The sign of dy_local depends on PyNite's local-y direction for a
+    # horizontal member. We assert the magnitude is correct.
+    mid_station = next(s for s in mr.stations if abs(s.position_pct - 50) < 3)
+    assert abs(abs(mid_station.dy_local) - 1302) < 20
+
+
+def test_combine_propagates_dy_local():
+    """Linear combination should scale dy_local by the factor."""
+    stations = [
+        MemberStationResult(0.0, 0, 0, 0, 0, dy_local=0.0),
+        MemberStationResult(2.5, 50, 0, 0, 0, dy_local=-5.0),
+        MemberStationResult(5.0, 100, 0, 0, 0, dy_local=0.0),
+    ]
+    mr = MemberResult(member_id=1, stations=stations)
+    nr = NodeResult(node_id=1)
+    rr = ReactionResult(node_id=1)
+    g_case = CaseResult("G", {1: mr}, {1: nr}, {1: rr})
+    cases = {"G": g_case}
+    combo = combine_case_results(cases, {"G": 1.35}, "ULS-1")
+    assert abs(combo.members[1].stations[1].dy_local - 1.35 * -5.0) < 0.01
