@@ -3,6 +3,9 @@ name = "portal-frame"
 version = "0.1.0"
 description = "SpaceGass 2D portal frame generator for Formsteel CFS sections with NZ loading"
 requires-python = ">=3.10"
+dependencies = [
+    "PyNiteFEA==2.4.1",
+]
 
 [project.scripts]
 portal-frame = "portal_frame.cli:main"
