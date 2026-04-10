@@ -12,6 +12,7 @@ class MemberStationResult:
     shear: float          # kN
     moment: float         # kNm
     dy_local: float = 0.0 # mm, member-local y deflection (perpendicular to member)
+    dx_local: float = 0.0 # mm, member-local x deflection (along member axis)
 
 
 @dataclass
