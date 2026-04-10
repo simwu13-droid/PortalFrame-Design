@@ -1894,8 +1894,12 @@ class PortalFrameApp(tk.Tk):
         For normal cases/combos, returns {'data': {mid: [(pct, val), ...]},
         'type': dtype, 'members': {mid: (n1, n2)}}.
 
-        For envelopes, also includes 'data_min' with the min curve. The
-        renderer draws both curves with a shared shrink factor.
+        For envelopes, also includes 'data_min' with the min curve.
+
+        For the δ diagram type, also includes 'data_dx' (and 'data_min_dx'
+        for envelopes) — per-station dx_local values needed by the renderer
+        to reconstruct the global deformation vector and guarantee diagram
+        continuity at shared nodes.
         """
         display = self.diagram_case_var.get()
         dtype = self.diagram_type_var.get()
@@ -1923,19 +1927,30 @@ class PortalFrameApp(tk.Tk):
                 for mid, mr in cr.members.items()
             }
 
+        def _extract_dx(cr):
+            """For δ diagrams, extract dx_local values parallel to main attr."""
+            return {
+                mid: [(s.position_pct, s.dx_local) for s in mr.stations]
+                for mid, mr in cr.members.items()
+            }
+
         members_map = {}
         if self._analysis_topology:
             for mid, mem in self._analysis_topology.members.items():
                 members_map[mid] = (mem.node_start, mem.node_end)
 
         if env_max is not None:
-            return {
+            result = {
                 "data": _extract(env_max),
                 "data_min": _extract(env_min),
                 "type": dtype,
                 "members": members_map,
                 "is_envelope": True,
             }
+            if dtype == "δ":
+                result["data_dx"] = _extract_dx(env_max)
+                result["data_min_dx"] = _extract_dx(env_min)
+            return result
 
         # Normal case/combo lookup
         if name in out.case_results:
@@ -1945,11 +1960,14 @@ class PortalFrameApp(tk.Tk):
         else:
             return None
 
-        return {
+        result = {
             "data": _extract(cr),
             "type": dtype,
             "members": members_map,
         }
+        if dtype == "δ":
+            result["data_dx"] = _extract_dx(cr)
+        return result
 
     # ── Save / Load / Recent ──
 
