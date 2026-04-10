@@ -12,7 +12,18 @@ DIAGRAM_COLORS = {
     "N": "#e5c07b",   # Gold for axial
     "δ": "#61afef",   # Blue for deflection
 }
+DIAGRAM_UNITS = {"M": "kNm", "V": "kN", "N": "kN", "δ": "mm"}
 DIAGRAM_MAX_PX = 60
+# Fixed padding (px) reserved for peak-label positioning around diagram bounds.
+_DIAGRAM_PAD = 20
+_DIAGRAM_LABEL_EXTRA = 12
+
+
+def _envelope_label_parts(is_envelope: bool, is_min: bool) -> tuple[str, str]:
+    """Return (text_prefix, label_key_suffix) for envelope max/min peak labels."""
+    if not is_envelope:
+        return "", ""
+    return ("min: ", "_min") if is_min else ("max: ", "")
 
 
 class FramePreview(tk.Canvas):
@@ -256,21 +267,32 @@ class FramePreview(tk.Canvas):
         # Transform nodes
         ns = {k: tx(*v) for k, v in nodes.items()}
 
-        # Members — use dimmed colors when δ diagram is active so the
-        # deflection curve stands out against the structure.
+        # Merge any extra topology nodes supplied by the diagram payload
+        # (e.g. crane bracket nodes with IDs outside the hardcoded 1-5 range).
+        # Without this, draw_force_diagram skips members whose endpoints
+        # aren't in ns — making column sub-members invisible on crane frames.
+        if diagram and "topology_nodes" in diagram:
+            for nid, (wx, wy) in diagram["topology_nodes"].items():
+                if nid not in ns:
+                    ns[nid] = tx(wx, wy)
+
+        # Members — when δ diagram is active, draw the undeformed frame as
+        # thin dimmed outline so small column deflections (only a few pixels
+        # wide) aren't hidden behind a thick structural member line.
         is_deflection = bool(diagram and diagram.get("type") == "δ")
         col_color = COLORS["frame_col_dim"] if is_deflection else COLORS["frame_col"]
         raf_color = COLORS["frame_raf_dim"] if is_deflection else COLORS["frame_raf"]
+        member_width = 1 if is_deflection else 3
 
         if roof_type == "mono":
-            self.create_line(*ns[1], *ns[2], fill=col_color, width=3)
-            self.create_line(*ns[2], *ns[3], fill=raf_color, width=3)
-            self.create_line(*ns[3], *ns[4], fill=col_color, width=3)
+            self.create_line(*ns[1], *ns[2], fill=col_color, width=member_width)
+            self.create_line(*ns[2], *ns[3], fill=raf_color, width=member_width)
+            self.create_line(*ns[3], *ns[4], fill=col_color, width=member_width)
         else:
-            self.create_line(*ns[1], *ns[2], fill=col_color, width=3)
-            self.create_line(*ns[5], *ns[4], fill=col_color, width=3)
-            self.create_line(*ns[2], *ns[3], fill=raf_color, width=3)
-            self.create_line(*ns[3], *ns[4], fill=raf_color, width=3)
+            self.create_line(*ns[1], *ns[2], fill=col_color, width=member_width)
+            self.create_line(*ns[5], *ns[4], fill=col_color, width=member_width)
+            self.create_line(*ns[2], *ns[3], fill=raf_color, width=member_width)
+            self.create_line(*ns[3], *ns[4], fill=raf_color, width=member_width)
 
         # Crane bracket nodes (if crane_rail_height is set)
         crane_h = geom.get("crane_rail_height")
@@ -429,6 +451,14 @@ class FramePreview(tk.Canvas):
 
     # ── Force diagram drawing ──
 
+    def _diagram_bounds(self):
+        """Return effective (x_min, x_max, y_min, y_max) canvas bounds for
+        diagram rendering, with padding and peak-label reservation applied."""
+        w = self.winfo_width()
+        h = self.winfo_height()
+        reserved = _DIAGRAM_PAD + _DIAGRAM_LABEL_EXTRA
+        return reserved, w - reserved, reserved, h - reserved
+
     def draw_force_diagram(self, diagram, ns):
         """Draw force diagram overlaid on frame members.
 
@@ -452,30 +482,22 @@ class FramePreview(tk.Canvas):
         # For envelopes, scan both data (max curve) and data_min (min curve).
         data_min = diagram.get("data_min")
         is_envelope = data_min is not None
+        data_sources = [data] + ([data_min] if is_envelope else [])
 
-        max_val = 0
-        for stations in data.values():
-            for _, val in stations:
-                max_val = max(max_val, abs(val))
-        if is_envelope:
-            for stations in data_min.values():
-                for _, val in stations:
-                    max_val = max(max_val, abs(val))
+        max_val = max(
+            (abs(val)
+             for source in data_sources
+             for stations in source.values()
+             for _, val in stations),
+            default=0.0,
+        )
         if max_val < 1e-6:
             return
 
-        # Canvas bounds with a small safety pad
-        w = self.winfo_width()
-        h = self.winfo_height()
-        pad = 20
-        # Reserve additional space for the fixed +12 peak-label offset. We apply
-        # this reservation to ALL stations (not just the peak) — it's conservative
-        # but eliminates sign-tracking complexity and is visually safe.
-        LABEL_EXTRA = 12
-        x_min = pad + LABEL_EXTRA
-        x_max = w - pad - LABEL_EXTRA
-        y_min = pad + LABEL_EXTRA
-        y_max = h - pad - LABEL_EXTRA
+        # Canvas bounds with a small safety pad. Reserve space for the fixed
+        # +12 peak-label offset; applied to ALL stations (not just the peak)
+        # for simplicity — conservative but visually safe.
+        x_min, x_max, y_min, y_max = self._diagram_bounds()
 
         # Pre-compute member geometry
         member_geom = {}  # mid -> (sx, sy, ex, ey, mdx, mdy, nx, ny)
@@ -500,10 +522,6 @@ class FramePreview(tk.Canvas):
         # proposed diagram point against the effective bounds. For envelopes,
         # both the max and min curves must fit.
         shrink = 1.0
-        data_sources = [data]
-        if is_envelope:
-            data_sources.append(data_min)
-
         for data_source in data_sources:
             for mid, stations in data_source.items():
                 if mid not in member_geom:
@@ -612,18 +630,14 @@ class FramePreview(tk.Canvas):
                     px = sx + mdx * t
                     py = sy + mdy * t
                     offset = (peak[1] / max_val) * effective_max_px
-                    lx = px + nx * (offset + 12 * (1 if offset >= 0 else -1))
-                    ly = py + ny * (offset + 12 * (1 if offset >= 0 else -1))
-                    unit = {"M": "kNm", "V": "kN", "N": "kN", "δ": "mm"}[dtype]
-                    if is_envelope:
-                        prefix = "min: " if is_min else "max: "
-                    else:
-                        prefix = ""
-                    label_key = (f"diag_{mid}_{dtype}_min" if is_min
-                                 else f"diag_{mid}_{dtype}")
+                    nudged = offset + (12 if offset >= 0 else -12)
+                    lx = px + nx * nudged
+                    ly = py + ny * nudged
+                    prefix, key_suffix = _envelope_label_parts(is_envelope, is_min)
                     self._create_label(
-                        lx, ly, f"{prefix}{peak[1]:.1f} {unit}",
-                        label_key, fill=color)
+                        lx, ly,
+                        f"{prefix}{peak[1]:.1f} {DIAGRAM_UNITS[dtype]}",
+                        f"diag_{mid}_{dtype}{key_suffix}", fill=color)
 
         _draw_curves(data, is_min=False)
         if is_envelope:
@@ -675,14 +689,7 @@ class FramePreview(tk.Canvas):
             return
 
         # Canvas bounds with a small safety pad and reserved label space
-        w = self.winfo_width()
-        h = self.winfo_height()
-        pad = 20
-        LABEL_EXTRA = 12
-        x_min = pad + LABEL_EXTRA
-        x_max = w - pad - LABEL_EXTRA
-        y_min = pad + LABEL_EXTRA
-        y_max = h - pad - LABEL_EXTRA
+        x_min, x_max, y_min, y_max = self._diagram_bounds()
 
         # Pre-compute member geometry (screen-space direction and length)
         member_geom = {}  # mid -> (sx, sy, mdx, mdy, L)
@@ -713,13 +720,12 @@ class FramePreview(tk.Canvas):
             dsy = alpha * (dx_local * mdy + dy_local * mdx) / L
             return dsx, dsy
 
-        def _iter_sources():
-            yield data, data_dx
-            if is_envelope:
-                yield data_min, data_min_dx
+        dy_dx_sources = [(data, data_dx)]
+        if is_envelope:
+            dy_dx_sources.append((data_min, data_min_dx))
 
         shrink = 1.0
-        for source_dy, source_dx in _iter_sources():
+        for source_dy, source_dx in dy_dx_sources:
             for mid, stations in source_dy.items():
                 if mid not in member_geom:
                     continue
@@ -785,7 +791,10 @@ class FramePreview(tk.Canvas):
                 for pt in deformed_pts:
                     curve_coords.extend(pt)
                 if len(curve_coords) >= 4:
-                    curve_width = 3
+                    # Wider than the 1px undeformed frame so the deformed
+                    # shape dominates the view, including small column
+                    # deflections that would otherwise hide behind the frame.
+                    curve_width = 4
                     if is_min:
                         self.create_line(*curve_coords, fill=color,
                                          width=curve_width, dash=(4, 3),
@@ -822,15 +831,10 @@ class FramePreview(tk.Canvas):
                     else:
                         lx = base_x
                         ly = base_y
-                    if is_envelope:
-                        prefix = "min: " if is_min else "max: "
-                    else:
-                        prefix = ""
-                    label_key = (f"diag_{mid}_δ_min" if is_min
-                                 else f"diag_{mid}_δ")
+                    prefix, key_suffix = _envelope_label_parts(is_envelope, is_min)
                     self._create_label(
                         lx, ly, f"{prefix}{dy_local:.1f} mm",
-                        label_key, fill=color)
+                        f"diag_{mid}_δ{key_suffix}", fill=color)
 
         _draw_curves(data, data_dx, is_min=False)
         if is_envelope:

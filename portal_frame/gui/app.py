@@ -1906,67 +1906,67 @@ class PortalFrameApp(tk.Tk):
         out = self._analysis_output
 
         # Translate display string back to actual case/combo name
-        name = self._diagram_display_to_name.get(display) if hasattr(
-            self, '_diagram_display_to_name') else display
+        name = self._diagram_display_to_name.get(display)
         if name is None:
             return None
 
         attr = {"M": "moment", "V": "shear", "N": "axial", "δ": "dy_local"}[dtype]
 
-        # Envelope selections return both max and min curves
-        if name == "ULS Envelope" and out.uls_envelope_curves is not None:
-            env_max, env_min = out.uls_envelope_curves
-        elif name == "SLS Envelope" and out.sls_envelope_curves is not None:
-            env_max, env_min = out.sls_envelope_curves
-        else:
-            env_max = env_min = None
-
-        def _extract(cr):
+        def _extract(cr, field):
             return {
-                mid: [(s.position_pct, getattr(s, attr)) for s in mr.stations]
+                mid: [(s.position_pct, getattr(s, field)) for s in mr.stations]
                 for mid, mr in cr.members.items()
             }
 
-        def _extract_dx(cr):
-            """For δ diagrams, extract dx_local values parallel to main attr."""
-            return {
-                mid: [(s.position_pct, s.dx_local) for s in mr.stations]
-                for mid, mr in cr.members.items()
-            }
-
+        # Pass ALL topology node world coords so the preview can resolve
+        # non-hardcoded nodes (e.g. crane bracket nodes added by
+        # _insert_crane_brackets) when drawing per-member diagrams.
         members_map = {}
+        topology_nodes = {}
         if self._analysis_topology:
-            for mid, mem in self._analysis_topology.members.items():
-                members_map[mid] = (mem.node_start, mem.node_end)
+            members_map = {
+                mid: (mem.node_start, mem.node_end)
+                for mid, mem in self._analysis_topology.members.items()
+            }
+            topology_nodes = {
+                nid: (node.x, node.y)
+                for nid, node in self._analysis_topology.nodes.items()
+            }
 
-        if env_max is not None:
+        base = {
+            "type": dtype,
+            "members": members_map,
+            "topology_nodes": topology_nodes,
+        }
+
+        # Envelope selections return both max and min curves
+        envelope_curves = None
+        if name == "ULS Envelope":
+            envelope_curves = out.uls_envelope_curves
+        elif name == "SLS Envelope":
+            envelope_curves = out.sls_envelope_curves
+
+        if envelope_curves is not None:
+            env_max, env_min = envelope_curves
             result = {
-                "data": _extract(env_max),
-                "data_min": _extract(env_min),
-                "type": dtype,
-                "members": members_map,
+                **base,
+                "data": _extract(env_max, attr),
+                "data_min": _extract(env_min, attr),
                 "is_envelope": True,
             }
             if dtype == "δ":
-                result["data_dx"] = _extract_dx(env_max)
-                result["data_min_dx"] = _extract_dx(env_min)
+                result["data_dx"] = _extract(env_max, "dx_local")
+                result["data_min_dx"] = _extract(env_min, "dx_local")
             return result
 
         # Normal case/combo lookup
-        if name in out.case_results:
-            cr = out.case_results[name]
-        elif name in out.combo_results:
-            cr = out.combo_results[name]
-        else:
+        cr = out.case_results.get(name) or out.combo_results.get(name)
+        if cr is None:
             return None
 
-        result = {
-            "data": _extract(cr),
-            "type": dtype,
-            "members": members_map,
-        }
+        result = {**base, "data": _extract(cr, attr)}
         if dtype == "δ":
-            result["data_dx"] = _extract_dx(cr)
+            result["data_dx"] = _extract(cr, "dx_local")
         return result
 
     # ── Save / Load / Recent ──

@@ -5,6 +5,10 @@ from portal_frame.analysis.results import (
     NodeResult, ReactionResult, AnalysisOutput, EnvelopeEntry,
 )
 
+_STATION_FIELDS = ("axial", "shear", "moment", "dy_local", "dx_local")
+_NODE_FIELDS = ("dx", "dy", "rz")
+_REACTION_FIELDS = ("fx", "fy", "mz")
+
 
 def combine_case_results(
     case_results: dict[str, CaseResult],
@@ -18,44 +22,38 @@ def combine_case_results(
     for mid, ref_mr in ref_case.members.items():
         stations = []
         for j, ref_st in enumerate(ref_mr.stations):
-            axial = shear = moment = dy_local = dx_local = 0.0
+            acc = {f: 0.0 for f in _STATION_FIELDS}
             for cname, factor in factors.items():
                 if cname in case_results and mid in case_results[cname].members:
                     st = case_results[cname].members[mid].stations[j]
-                    axial += factor * st.axial
-                    shear += factor * st.shear
-                    moment += factor * st.moment
-                    dy_local += factor * st.dy_local
-                    dx_local += factor * st.dx_local
+                    for f in _STATION_FIELDS:
+                        acc[f] += factor * getattr(st, f)
             stations.append(MemberStationResult(
-                ref_st.position, ref_st.position_pct,
-                axial, shear, moment, dy_local, dx_local,
+                ref_st.position, ref_st.position_pct, **acc,
             ))
         mr = MemberResult(mid, stations)
         mr.compute_extremes()
         members[mid] = mr
 
     deflections = {}
-    for nid, ref_nd in ref_case.deflections.items():
-        dx = dy = rz = 0.0
+    for nid in ref_case.deflections:
+        acc = {f: 0.0 for f in _NODE_FIELDS}
         for cname, factor in factors.items():
             if cname in case_results and nid in case_results[cname].deflections:
                 nd = case_results[cname].deflections[nid]
-                dx += factor * nd.dx
-                dy += factor * nd.dy
-                rz += factor * nd.rz
-        deflections[nid] = NodeResult(nid, dx, dy, rz)
+                for f in _NODE_FIELDS:
+                    acc[f] += factor * getattr(nd, f)
+        deflections[nid] = NodeResult(nid, **acc)
 
     reactions = {}
-    for nid, ref_rx in ref_case.reactions.items():
-        fx = fy = mz = 0.0
+    for nid in ref_case.reactions:
+        acc = {f: 0.0 for f in _REACTION_FIELDS}
         for cname, factor in factors.items():
             if cname in case_results and nid in case_results[cname].reactions:
                 rx = case_results[cname].reactions[nid]
-                fx += factor * rx.fx
-                fy += factor * rx.fy
-                mz += factor * rx.mz
-        reactions[nid] = ReactionResult(nid, fx, fy, mz)
+                for f in _REACTION_FIELDS:
+                    acc[f] += factor * getattr(rx, f)
+        reactions[nid] = ReactionResult(nid, **acc)
 
     return CaseResult(combo_name, members, deflections, reactions)
 
@@ -137,35 +135,22 @@ def _build_envelope_pair(
     # Use the first combo as a structural template for members/nodes
     ref_cr = next(iter(matching.values()))
 
+    def _make_extreme_station(ref_st, init):
+        return MemberStationResult(
+            position=ref_st.position,
+            position_pct=ref_st.position_pct,
+            **{f: init for f in _STATION_FIELDS},
+        )
+
     # Build max and min CaseResults by walking every station of every combo
     max_members = {}
     min_members = {}
     for mid, ref_mr in ref_cr.members.items():
         n_stations = len(ref_mr.stations)
-        max_stations = [
-            MemberStationResult(
-                position=ref_mr.stations[j].position,
-                position_pct=ref_mr.stations[j].position_pct,
-                axial=float("-inf"),
-                shear=float("-inf"),
-                moment=float("-inf"),
-                dy_local=float("-inf"),
-                dx_local=float("-inf"),
-            )
-            for j in range(n_stations)
-        ]
-        min_stations = [
-            MemberStationResult(
-                position=ref_mr.stations[j].position,
-                position_pct=ref_mr.stations[j].position_pct,
-                axial=float("inf"),
-                shear=float("inf"),
-                moment=float("inf"),
-                dy_local=float("inf"),
-                dx_local=float("inf"),
-            )
-            for j in range(n_stations)
-        ]
+        max_stations = [_make_extreme_station(ref_mr.stations[j], float("-inf"))
+                        for j in range(n_stations)]
+        min_stations = [_make_extreme_station(ref_mr.stations[j], float("inf"))
+                        for j in range(n_stations)]
         for cr in matching.values():
             if mid not in cr.members:
                 continue
@@ -173,27 +158,13 @@ def _build_envelope_pair(
                 if j >= n_stations:
                     break
                 ms = max_stations[j]
-                if st.axial > ms.axial:
-                    ms.axial = st.axial
-                if st.shear > ms.shear:
-                    ms.shear = st.shear
-                if st.moment > ms.moment:
-                    ms.moment = st.moment
-                if st.dy_local > ms.dy_local:
-                    ms.dy_local = st.dy_local
-                if st.dx_local > ms.dx_local:
-                    ms.dx_local = st.dx_local
                 mn = min_stations[j]
-                if st.axial < mn.axial:
-                    mn.axial = st.axial
-                if st.shear < mn.shear:
-                    mn.shear = st.shear
-                if st.moment < mn.moment:
-                    mn.moment = st.moment
-                if st.dy_local < mn.dy_local:
-                    mn.dy_local = st.dy_local
-                if st.dx_local < mn.dx_local:
-                    mn.dx_local = st.dx_local
+                for f in _STATION_FIELDS:
+                    v = getattr(st, f)
+                    if v > getattr(ms, f):
+                        setattr(ms, f, v)
+                    if v < getattr(mn, f):
+                        setattr(mn, f, v)
 
         max_mr = MemberResult(member_id=mid, stations=max_stations)
         max_mr.compute_extremes()

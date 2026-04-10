@@ -40,7 +40,6 @@ class PyNiteSolver(AnalysisSolver):
         self._output = None
 
     def solve(self) -> AnalysisResults:
-        r = self._request
         case_names = self._build_case_names()
 
         # Solve each unfactored load case individually
@@ -178,18 +177,21 @@ class PyNiteSolver(AnalysisSolver):
             else:
                 self._apply_crane_transverse(model, case_name)
 
+    def _apply_uniform_fy(self, model, member_ids, w, case_name):
+        """Apply a uniform FY load (kN/m) to a list of member IDs."""
+        for mid in member_ids:
+            model.add_member_dist_load(f"M{mid}", "FY", w, w, case=case_name)
+
     def _apply_dead_loads(self, model, case_name, rafter_ids, column_ids, bay):
         r = self._request
         # Roof dead: global -Y on rafters
         if r.load_input.dead_load_roof > 0:
-            w = -r.load_input.dead_load_roof * bay
-            for mid in rafter_ids:
-                model.add_member_dist_load(f"M{mid}", "FY", w, w, case=case_name)
+            self._apply_uniform_fy(model, rafter_ids,
+                                   -r.load_input.dead_load_roof * bay, case_name)
         # Wall dead: global -Y on columns
         if r.load_input.dead_load_wall > 0:
-            w = -r.load_input.dead_load_wall * bay
-            for mid in column_ids:
-                model.add_member_dist_load(f"M{mid}", "FY", w, w, case=case_name)
+            self._apply_uniform_fy(model, column_ids,
+                                   -r.load_input.dead_load_wall * bay, case_name)
         # Self-weight
         if r.load_input.include_self_weight:
             for mid, mem in r.topology.members.items():
@@ -201,9 +203,8 @@ class PyNiteSolver(AnalysisSolver):
     def _apply_live_loads(self, model, case_name, rafter_ids, bay):
         r = self._request
         if r.load_input.live_load_roof > 0:
-            w = -r.load_input.live_load_roof * bay
-            for mid in rafter_ids:
-                model.add_member_dist_load(f"M{mid}", "FY", w, w, case=case_name)
+            self._apply_uniform_fy(model, rafter_ids,
+                                   -r.load_input.live_load_roof * bay, case_name)
 
     def _apply_wind_loads(self, model, case_name, wc, rafter_ids, column_ids, bay):
         r = self._request
@@ -261,7 +262,8 @@ class PyNiteSolver(AnalysisSolver):
                 w = -uniform * bay
                 model.add_member_dist_load(f"M{mid}", "Fy", w, w, case=case_name)
 
-    def _apply_earthquake_loads(self, model, case_name):
+    def _compute_earthquake_forces(self):
+        """Run NZS 1170.5 equivalent static calc using current request inputs."""
         r = self._request
         from types import SimpleNamespace
         geom_ns = SimpleNamespace(
@@ -270,10 +272,14 @@ class PyNiteSolver(AnalysisSolver):
                 math.radians(r.roof_pitch)),
             bay_spacing=r.bay_spacing,
         )
-        eq_result = calculate_earthquake_forces(
+        return calculate_earthquake_forces(
             geom_ns, r.load_input.dead_load_roof,
             r.load_input.dead_load_wall, r.load_input.earthquake,
         )
+
+    def _apply_earthquake_loads(self, model, case_name):
+        r = self._request
+        eq_result = self._compute_earthquake_forces()
         F_uls = eq_result["F_node"]
         sign = 1.0 if case_name == "E+" else -1.0
 
@@ -296,40 +302,35 @@ class PyNiteSolver(AnalysisSolver):
                     model.add_node_load(f"N{node.id}", "FX",
                                         sign * F_crane, case=case_name)
 
-    def _apply_crane_dead(self, model, case_name):
-        r = self._request
-        crane = r.load_input.crane
+    def _apply_crane_vertical(self, model, case_name, left_load, right_load):
+        """Apply vertical crane loads (dead or live) to bracket nodes."""
         bracket_nodes = self._get_bracket_nodes()
-        if len(bracket_nodes) >= 2:
-            model.add_node_load(f"N{bracket_nodes[0].id}", "FY",
-                                -crane.dead_left, case=case_name)
-            model.add_node_load(f"N{bracket_nodes[-1].id}", "FY",
-                                -crane.dead_right, case=case_name)
+        if len(bracket_nodes) < 2:
+            return
+        model.add_node_load(f"N{bracket_nodes[0].id}", "FY",
+                            -left_load, case=case_name)
+        model.add_node_load(f"N{bracket_nodes[-1].id}", "FY",
+                            -right_load, case=case_name)
+
+    def _apply_crane_dead(self, model, case_name):
+        crane = self._request.load_input.crane
+        self._apply_crane_vertical(model, case_name,
+                                   crane.dead_left, crane.dead_right)
 
     def _apply_crane_live(self, model, case_name):
-        r = self._request
-        crane = r.load_input.crane
-        bracket_nodes = self._get_bracket_nodes()
-        if len(bracket_nodes) >= 2:
-            model.add_node_load(f"N{bracket_nodes[0].id}", "FY",
-                                -crane.live_left, case=case_name)
-            model.add_node_load(f"N{bracket_nodes[-1].id}", "FY",
-                                -crane.live_right, case=case_name)
+        crane = self._request.load_input.crane
+        self._apply_crane_vertical(model, case_name,
+                                   crane.live_left, crane.live_right)
 
     def _apply_crane_transverse(self, model, case_name):
-        r = self._request
-        crane = r.load_input.crane
+        crane = self._request.load_input.crane
         if crane is None:
             return
         bracket_nodes = self._get_bracket_nodes()
         if len(bracket_nodes) < 2:
             return
-        # Find the matching transverse combo
-        tc = None
-        for t in crane.transverse_uls + crane.transverse_sls:
-            if t.name == case_name:
-                tc = t
-                break
+        tc = next((t for t in crane.transverse_uls + crane.transverse_sls
+                   if t.name == case_name), None)
         if tc is None:
             return
         model.add_node_load(f"N{bracket_nodes[0].id}", "FX",
@@ -355,9 +356,9 @@ class PyNiteSolver(AnalysisSolver):
     def _extract_results(self, model: FEModel3D, case_name: str) -> CaseResult:
         r = self._request
         members = {}
-        for mid, mem in r.topology.members.items():
-            name = f"M{mid}"
-            L = model.members[name].L()
+        for mid in r.topology.members:
+            m = model.members[f"M{mid}"]
+            L = m.L()
 
             stations = []
             for i in range(NUM_STATIONS):
@@ -366,17 +367,17 @@ class PyNiteSolver(AnalysisSolver):
                 # Negate moment and axial to match standard convention:
                 # standard: +moment = sagging, +axial = tension
                 # PyNite: +moment = hogging, +axial = compression
-                axial = -model.members[name].axial(x, "LC")
-                shear = model.members[name].shear("Fy", x, "LC")
-                moment = -model.members[name].moment("Mz", x, "LC")
+                axial = -m.axial(x, "LC")
+                shear = m.shear("Fy", x, "LC")
+                moment = -m.moment("Mz", x, "LC")
                 # Local-y deflection in mm (PyNite returns metres).
                 # Negate so positive = sagging (into frame interior), matching
                 # the convention already used for axial and moment extraction.
-                dy_local = -model.members[name].deflection('dy', x, "LC") * 1000
+                dy_local = -m.deflection('dy', x, "LC") * 1000
                 # Local-x deflection in mm (PyNite raw — do NOT negate).
                 # Used only by the δ diagram renderer to reconstruct the
                 # global deformation vector via member-angle rotation.
-                dx_local = model.members[name].deflection('dx', x, "LC") * 1000
+                dx_local = m.deflection('dx', x, "LC") * 1000
                 stations.append(MemberStationResult(
                     position=x, position_pct=pct,
                     axial=axial, shear=shear, moment=moment,
@@ -418,17 +419,7 @@ class PyNiteSolver(AnalysisSolver):
 
         eq_sls_factor = 1.0
         if r.load_input.earthquake and hasattr(r.load_input.earthquake, 'R_sls'):
-            from types import SimpleNamespace
-            geom_ns = SimpleNamespace(
-                span=r.span, eave_height=r.eave_height,
-                ridge_height=r.eave_height + (r.span / 2.0) * math.tan(
-                    math.radians(r.roof_pitch)),
-                bay_spacing=r.bay_spacing,
-            )
-            eq_result = calculate_earthquake_forces(
-                geom_ns, r.load_input.dead_load_roof,
-                r.load_input.dead_load_wall, r.load_input.earthquake,
-            )
+            eq_result = self._compute_earthquake_forces()
             # SLS EQ factor = F_node_sls / F_node_uls (scales the ULS case)
             if eq_result["F_node"] > 0:
                 eq_sls_factor = eq_result["F_node_sls"] / eq_result["F_node"]
