@@ -405,3 +405,86 @@ def test_envelope_min_bounds_all_combos():
                 assert env_st.shear <= combo_st.shear + 1e-9
                 assert env_st.axial <= combo_st.axial + 1e-9
                 assert env_st.dy_local <= combo_st.dy_local + 1e-9
+
+
+def test_dx_local_extracted_for_column():
+    """Portal frame under zero load — dx_local field must exist on every
+    station and be finite (not NaN), even when deformation is ~0."""
+    req = _make_portal_request(w_dead=0.0, w_live=0.0)
+    solver = PyNiteSolver()
+    solver.build_model(req)
+    solver.solve()
+
+    g_case = solver.output.case_results["G"]
+    for mid, mr in g_case.members.items():
+        assert all(hasattr(s, "dx_local") for s in mr.stations)
+        for s in mr.stations:
+            assert s.dx_local == s.dx_local, \
+                f"dx_local is NaN on member {mid} at pct={s.position_pct}"
+            assert abs(s.dx_local) < 0.01
+            assert abs(s.dy_local) < 0.01
+
+
+def test_dx_local_nonzero_for_axially_loaded_column():
+    """Column under axial gravity load should compress — dx_local (along
+    member axis) is nonzero at the top station where axial shortening peaks."""
+    from portal_frame.models.loads import WindCase
+    req = _make_portal_request(w_dead=0.15, w_live=0.0)
+    # Add a gravity wall load so columns carry axial force
+    req.load_input.dead_load_wall = 2.0
+    solver = PyNiteSolver()
+    solver.build_model(req)
+    solver.solve()
+
+    g_case = solver.output.case_results["G"]
+    # Find a column member (section_id == 1)
+    col_ids = [mid for mid, mr in g_case.members.items()
+               if req.topology.members[mid].section_id == 1]
+    assert col_ids, "No column members found"
+    # At least one column should show nonzero dx_local at its top station
+    any_nonzero = any(
+        abs(g_case.members[mid].stations[-1].dx_local) > 1e-6
+        for mid in col_ids
+    )
+    assert any_nonzero, \
+        "dx_local should be nonzero in at least one column under axial wall load"
+
+
+def test_combine_propagates_dx_local():
+    """Linear combination should scale dx_local by the factor."""
+    stations = [
+        MemberStationResult(0.0, 0, 0, 0, 0, dy_local=0.0, dx_local=0.0),
+        MemberStationResult(2.5, 50, 0, 0, 0, dy_local=0.0, dx_local=-3.0),
+        MemberStationResult(5.0, 100, 0, 0, 0, dy_local=0.0, dx_local=0.0),
+    ]
+    mr = MemberResult(member_id=1, stations=stations)
+    nr = NodeResult(node_id=1)
+    rr = ReactionResult(node_id=1)
+    g_case = CaseResult("G", {1: mr}, {1: nr}, {1: rr})
+    cases = {"G": g_case}
+    combo = combine_case_results(cases, {"G": 1.35}, "ULS-1")
+    assert abs(combo.members[1].stations[1].dx_local - 1.35 * -3.0) < 0.01
+
+
+def test_envelope_bounds_dx_local():
+    """Envelope max/min should also bound dx_local across combos."""
+    req = _make_portal_request()
+    solver = PyNiteSolver()
+    solver.build_model(req)
+    solver.solve()
+
+    out = solver.output
+    uls_max, uls_min = out.uls_envelope_curves
+    uls_combos = [cr for name, cr in out.combo_results.items()
+                  if name.startswith("ULS")]
+
+    for mid, env_mr in uls_max.members.items():
+        for j, env_st in enumerate(env_mr.stations):
+            for combo_cr in uls_combos:
+                combo_st = combo_cr.members[mid].stations[j]
+                assert env_st.dx_local >= combo_st.dx_local - 1e-9
+    for mid, env_mr in uls_min.members.items():
+        for j, env_st in enumerate(env_mr.stations):
+            for combo_cr in uls_combos:
+                combo_st = combo_cr.members[mid].stations[j]
+                assert env_st.dx_local <= combo_st.dx_local + 1e-9

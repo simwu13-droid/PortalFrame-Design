@@ -373,10 +373,15 @@ class PyNiteSolver(AnalysisSolver):
                 # Negate so positive = sagging (into frame interior), matching
                 # the convention already used for axial and moment extraction.
                 dy_local = -model.members[name].deflection('dy', x, "LC") * 1000
+                # Local-x deflection in mm (PyNite raw — do NOT negate).
+                # Used only by the δ diagram renderer to reconstruct the
+                # global deformation vector via member-angle rotation.
+                dx_local = model.members[name].deflection('dx', x, "LC") * 1000
                 stations.append(MemberStationResult(
                     position=x, position_pct=pct,
                     axial=axial, shear=shear, moment=moment,
                     dy_local=dy_local,
+                    dx_local=dx_local,
                 ))
 
             mr = MemberResult(member_id=mid, stations=stations)
