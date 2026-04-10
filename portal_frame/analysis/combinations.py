@@ -18,7 +18,7 @@ def combine_case_results(
     for mid, ref_mr in ref_case.members.items():
         stations = []
         for j, ref_st in enumerate(ref_mr.stations):
-            axial = shear = moment = dy_local = 0.0
+            axial = shear = moment = dy_local = dx_local = 0.0
             for cname, factor in factors.items():
                 if cname in case_results and mid in case_results[cname].members:
                     st = case_results[cname].members[mid].stations[j]
@@ -26,9 +26,10 @@ def combine_case_results(
                     shear += factor * st.shear
                     moment += factor * st.moment
                     dy_local += factor * st.dy_local
+                    dx_local += factor * st.dx_local
             stations.append(MemberStationResult(
                 ref_st.position, ref_st.position_pct,
-                axial, shear, moment, dy_local,
+                axial, shear, moment, dy_local, dx_local,
             ))
         mr = MemberResult(mid, stations)
         mr.compute_extremes()
@@ -149,6 +150,7 @@ def _build_envelope_pair(
                 shear=float("-inf"),
                 moment=float("-inf"),
                 dy_local=float("-inf"),
+                dx_local=float("-inf"),
             )
             for j in range(n_stations)
         ]
@@ -160,6 +162,7 @@ def _build_envelope_pair(
                 shear=float("inf"),
                 moment=float("inf"),
                 dy_local=float("inf"),
+                dx_local=float("inf"),
             )
             for j in range(n_stations)
         ]
@@ -178,6 +181,8 @@ def _build_envelope_pair(
                     ms.moment = st.moment
                 if st.dy_local > ms.dy_local:
                     ms.dy_local = st.dy_local
+                if st.dx_local > ms.dx_local:
+                    ms.dx_local = st.dx_local
                 mn = min_stations[j]
                 if st.axial < mn.axial:
                     mn.axial = st.axial
@@ -187,6 +192,8 @@ def _build_envelope_pair(
                     mn.moment = st.moment
                 if st.dy_local < mn.dy_local:
                     mn.dy_local = st.dy_local
+                if st.dx_local < mn.dx_local:
+                    mn.dx_local = st.dx_local
 
         max_mr = MemberResult(member_id=mid, stations=max_stations)
         max_mr.compute_extremes()
