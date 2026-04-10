@@ -441,6 +441,13 @@ class FramePreview(tk.Canvas):
         members_map = diagram.get("members", {})
         color = DIAGRAM_COLORS.get(dtype, "#e06c75")
 
+        # δ diagrams use a different algorithm (rotation-based deformed
+        # shape) so that curves meet at shared nodes. M/V/N keep using
+        # the perpendicular-projection algorithm below.
+        if dtype == "δ":
+            self._draw_deflection_diagram(diagram, ns)
+            return
+
         # Find max absolute value across all members for normalisation.
         # For envelopes, scan both data (max curve) and data_min (min curve).
         data_min = diagram.get("data_min")
@@ -621,6 +628,213 @@ class FramePreview(tk.Canvas):
         _draw_curves(data, is_min=False)
         if is_envelope:
             _draw_curves(data_min, is_min=True)
+
+    def _draw_deflection_diagram(self, diagram, ns):
+        """Draw the deflection (δ) diagram as a true deformed shape.
+
+        Unlike M/V/N diagrams which are drawn perpendicular to each member
+        independently, the deflection diagram reconstructs the global
+        deformation vector at each station from PyNite's member-local
+        dx and dy, then plots the deformed position directly. This makes
+        the curves meet at shared nodes (apex, knee) because global
+        displacement is physically unique at each node.
+
+        Formula (screen coordinates, y-flipped relative to world):
+            Δscreen_x = α × (dx_local × mdx − dy_local × mdy) / L
+            Δscreen_y = α × (dx_local × mdy + dy_local × mdx) / L
+        where (mdx, mdy) is the screen member direction and L is the
+        screen member length. α is a uniform scale factor in pixels per
+        mm of global deformation magnitude.
+        """
+        data = diagram["data"]            # {mid: [(pct, dy_local), ...]}
+        data_dx = diagram.get("data_dx", {})
+        data_min = diagram.get("data_min")
+        data_min_dx = diagram.get("data_min_dx", {})
+        members_map = diagram.get("members", {})
+        color = DIAGRAM_COLORS.get("δ", "#61afef")
+
+        is_envelope = data_min is not None
+
+        # Find max deformation magnitude (in mm) across all stations and
+        # both envelope curves (if present). This sets the base scale.
+        def _max_mag(data_dy, data_dx_src):
+            m = 0.0
+            for mid, stations in data_dy.items():
+                dx_list = data_dx_src.get(mid, [])
+                for i, (_, dy) in enumerate(stations):
+                    dx = dx_list[i][1] if i < len(dx_list) else 0.0
+                    mag = math.hypot(dx, dy)
+                    if mag > m:
+                        m = mag
+            return m
+
+        max_disp = _max_mag(data, data_dx)
+        if is_envelope:
+            max_disp = max(max_disp, _max_mag(data_min, data_min_dx))
+        if max_disp < 1e-6:
+            return
+
+        # Canvas bounds with a small safety pad and reserved label space
+        w = self.winfo_width()
+        h = self.winfo_height()
+        pad = 20
+        LABEL_EXTRA = 12
+        x_min = pad + LABEL_EXTRA
+        x_max = w - pad - LABEL_EXTRA
+        y_min = pad + LABEL_EXTRA
+        y_max = h - pad - LABEL_EXTRA
+
+        # Pre-compute member geometry (screen-space direction and length)
+        member_geom = {}  # mid -> (sx, sy, mdx, mdy, L)
+        for mid, _ in data.items():
+            if mid not in members_map:
+                continue
+            n_start, n_end = members_map[mid]
+            if n_start not in ns or n_end not in ns:
+                continue
+            sx, sy = ns[n_start]
+            ex, ey = ns[n_end]
+            mdx = ex - sx
+            mdy = ey - sy
+            L = math.hypot(mdx, mdy)
+            if L < 1:
+                continue
+            member_geom[mid] = (sx, sy, mdx, mdy, L)
+
+        # Initial scale: α0 pixels per mm such that max_disp maps to
+        # DIAGRAM_MAX_PX.
+        alpha_0 = DIAGRAM_MAX_PX / max_disp
+
+        # Pre-pass: find shrink factor so every station stays inside
+        # the effective bounds.
+        def _station_screen_delta(dx_local, dy_local, mdx, mdy, L, alpha):
+            """Return (Δscreen_x, Δscreen_y) in pixels for a station."""
+            dsx = alpha * (dx_local * mdx - dy_local * mdy) / L
+            dsy = alpha * (dx_local * mdy + dy_local * mdx) / L
+            return dsx, dsy
+
+        def _iter_sources():
+            yield data, data_dx
+            if is_envelope:
+                yield data_min, data_min_dx
+
+        shrink = 1.0
+        for source_dy, source_dx in _iter_sources():
+            for mid, stations in source_dy.items():
+                if mid not in member_geom:
+                    continue
+                sx, sy, mdx, mdy, L = member_geom[mid]
+                dx_list = source_dx.get(mid, [])
+                for i, (pct, dy_local) in enumerate(stations):
+                    dx_local = dx_list[i][1] if i < len(dx_list) else 0.0
+                    t = pct / 100.0
+                    base_x = sx + mdx * t
+                    base_y = sy + mdy * t
+
+                    # Skip if baseline is already outside effective bounds
+                    if (base_x < x_min or base_x > x_max or
+                            base_y < y_min or base_y > y_max):
+                        continue
+
+                    dsx0, dsy0 = _station_screen_delta(
+                        dx_local, dy_local, mdx, mdy, L, alpha_0)
+                    px_proposed = base_x + dsx0
+                    py_proposed = base_y + dsy0
+
+                    s_point = 1.0
+                    # X bound check
+                    if abs(dsx0) > 1e-9:
+                        if px_proposed > x_max:
+                            s_point = min(s_point, (x_max - base_x) / dsx0)
+                        elif px_proposed < x_min:
+                            s_point = min(s_point, (x_min - base_x) / dsx0)
+                    # Y bound check
+                    if abs(dsy0) > 1e-9:
+                        if py_proposed > y_max:
+                            s_point = min(s_point, (y_max - base_y) / dsy0)
+                        elif py_proposed < y_min:
+                            s_point = min(s_point, (y_min - base_y) / dsy0)
+
+                    if s_point < shrink:
+                        shrink = s_point
+
+        # Floor the shrink so the diagram stays legible
+        shrink = max(shrink, 0.25)
+        alpha = alpha_0 * shrink
+
+        # Draw pass
+        def _draw_curves(source_dy, source_dx, is_min=False):
+            for mid, stations in source_dy.items():
+                if mid not in member_geom:
+                    continue
+                sx, sy, mdx, mdy, L = member_geom[mid]
+                dx_list = source_dx.get(mid, [])
+
+                deformed_pts = []
+                for i, (pct, dy_local) in enumerate(stations):
+                    dx_local = dx_list[i][1] if i < len(dx_list) else 0.0
+                    t = pct / 100.0
+                    base_x = sx + mdx * t
+                    base_y = sy + mdy * t
+                    dsx, dsy = _station_screen_delta(
+                        dx_local, dy_local, mdx, mdy, L, alpha)
+                    deformed_pts.append((base_x + dsx, base_y + dsy))
+
+                # Draw the deformed-shape curve (no polygon fill for δ)
+                curve_coords = []
+                for pt in deformed_pts:
+                    curve_coords.extend(pt)
+                if len(curve_coords) >= 4:
+                    curve_width = 3
+                    if is_min:
+                        self.create_line(*curve_coords, fill=color,
+                                         width=curve_width, dash=(4, 3),
+                                         tags=("diagram",))
+                    else:
+                        self.create_line(*curve_coords, fill=color,
+                                         width=curve_width, tags=("diagram",))
+
+                # Peak label: station with largest global deformation
+                # magnitude. Show for both max and min curves when envelope.
+                peak_idx = 0
+                peak_mag = 0.0
+                for i, (_, dy_local) in enumerate(stations):
+                    dx_local = dx_list[i][1] if i < len(dx_list) else 0.0
+                    mag = math.hypot(dx_local, dy_local)
+                    if mag > peak_mag:
+                        peak_mag = mag
+                        peak_idx = i
+                if peak_mag > 1e-6:
+                    pct, dy_local = stations[peak_idx]
+                    dx_local = (dx_list[peak_idx][1]
+                                if peak_idx < len(dx_list) else 0.0)
+                    t = pct / 100.0
+                    base_x = sx + mdx * t
+                    base_y = sy + mdy * t
+                    dsx, dsy = _station_screen_delta(
+                        dx_local, dy_local, mdx, mdy, L, alpha)
+                    # Extend label slightly beyond the peak
+                    dmag_screen = math.hypot(dsx, dsy)
+                    if dmag_screen > 1e-6:
+                        nudge = 12.0 / dmag_screen
+                        lx = base_x + dsx * (1.0 + nudge)
+                        ly = base_y + dsy * (1.0 + nudge)
+                    else:
+                        lx = base_x
+                        ly = base_y
+                    if is_envelope:
+                        prefix = "min: " if is_min else "max: "
+                    else:
+                        prefix = ""
+                    label_key = (f"diag_{mid}_δ_min" if is_min
+                                 else f"diag_{mid}_δ")
+                    self._create_label(
+                        lx, ly, f"{prefix}{dy_local:.1f} mm",
+                        label_key, fill=color)
+
+        _draw_curves(data, data_dx, is_min=False)
+        if is_envelope:
+            _draw_curves(data_min, data_min_dx, is_min=True)
 
     # ── Load drawing ──
 
