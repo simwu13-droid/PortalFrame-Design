@@ -761,7 +761,8 @@ class FramePreview(tk.Canvas):
 
         # Floor the shrink so tiny diagrams remain legible
         shrink = max(shrink, 0.25)
-        effective_max_px = DIAGRAM_MAX_PX * shrink
+        dtype_scale = self._diagram_scales.get(dtype, 1.0)
+        effective_max_px = DIAGRAM_MAX_PX * shrink * dtype_scale
 
         # Draw pass
         is_deflection = (dtype == "δ")
@@ -902,7 +903,8 @@ class FramePreview(tk.Canvas):
 
         # Initial scale: α0 pixels per mm such that max_disp maps to
         # DIAGRAM_MAX_PX.
-        alpha_0 = DIAGRAM_MAX_PX / max_disp
+        dtype_scale = self._diagram_scales.get("D", 1.0)
+        alpha_0 = DIAGRAM_MAX_PX * dtype_scale / max_disp
 
         # Pre-pass: find shrink factor so every station stays inside
         # the effective bounds.
@@ -1117,7 +1119,8 @@ class FramePreview(tk.Canvas):
             else:
                 ax, ay = -nx, -ny
 
-        arrow_len = (abs(w_kn) / max_w) * self.ARROW_MAX_LEN
+        load_scale = self._diagram_scales.get("F", 1.0)
+        arrow_len = (abs(w_kn) / max_w) * self.ARROW_MAX_LEN * load_scale
 
         seg_dx = ex - sx
         seg_dy = ey - sy
