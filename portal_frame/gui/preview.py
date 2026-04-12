@@ -98,6 +98,63 @@ class FramePreview(tk.Canvas):
         return (cx + (x - self._view_cx) * self._view_zoom,
                 cy - (y - self._view_cy) * self._view_zoom)
 
+    def _fit_to_window(self, geom, loads=None):
+        """Compute view_cx, view_cy, view_zoom to fit the frame in the canvas.
+
+        Replaces the old inline scale/ox/oy computation in update_frame().
+        Stores result in _view_cx/cy/zoom so that tx() uses it.
+        """
+        w = self.winfo_width()
+        h = self.winfo_height()
+        if w < 50 or h < 50:
+            return
+
+        span = geom.get("span", 12)
+        eave = geom.get("eave_height", 4.5)
+        pitch = geom.get("roof_pitch", 5)
+        pitch2 = geom.get("roof_pitch_2", pitch)
+        roof_type = geom.get("roof_type", "gable")
+
+        ridge = geom.get("ridge_height", None)
+        apex_x = geom.get("apex_x", None)
+
+        if roof_type == "mono":
+            if ridge is None:
+                ridge = eave + span * math.tan(math.radians(pitch))
+        else:
+            if apex_x is None:
+                p1 = math.tan(math.radians(pitch))
+                p2 = math.tan(math.radians(pitch2))
+                apex_x = span * p2 / (p1 + p2) if (p1 + p2) > 0 else span / 2.0
+            if ridge is None:
+                ridge = eave + apex_x * math.tan(math.radians(pitch))
+
+        has_loads = bool(loads and loads.get("members"))
+        pad_side = 100 if has_loads else 55
+        pad_top = 80
+        pad_bot = 55
+        total_h = ridge if ridge > 0 else 1.0
+
+        scale_x = (w - 2 * pad_side) / span if span > 0 else 1
+        scale_y = (h - pad_top - pad_bot) / total_h if total_h > 0 else 1
+        zoom = min(scale_x, scale_y)
+
+        # Match the old ox/oy-based transform:
+        # Old: screen_x = ox + x*zoom, screen_y = oy - y*zoom
+        #   where ox = pad_side + (w - 2*pad_side - span*zoom)/2
+        #         oy = h - pad_bot
+        # New: screen_x = w/2 + (x - view_cx)*zoom
+        #      screen_y = h/2 - (y - view_cy)*zoom
+        # Solving for view_cx/cy that produce identical output:
+        ox = pad_side + (w - 2 * pad_side - span * zoom) / 2
+        oy = h - pad_bot
+        self._view_cx = (w / 2.0 - ox) / zoom
+        self._view_cy = (oy - h / 2.0) / zoom
+
+        self._view_zoom = zoom
+        self._view_zoom_base = zoom
+        self._view_dirty = False
+
     # ── Draggable label infrastructure ──
 
     def _make_draggable(self, item_id, label_key):
@@ -282,30 +339,20 @@ class FramePreview(tk.Canvas):
         for i in range(0, h, 30):
             self.create_line(0, i, w, i, fill=COLORS["canvas_grid"], dash=(1, 4))
 
-        # Scale to fit — generous padding for loads + annotations
-        has_loads = bool(loads and loads.get("members"))
-        pad_side = 100 if has_loads else 55
-        pad_top = 80
-        pad_bot = 55
-        total_h = ridge * 1.0
-        scale_x = (w - 2 * pad_side) / span if span > 0 else 1
-        scale_y = (h - pad_top - pad_bot) / total_h if total_h > 0 else 1
-        scale = min(scale_x, scale_y)
+        # Refit view if dirty (first draw, geometry change, normalize)
+        if self._view_dirty:
+            self._fit_to_window(geom, loads)
 
-        ox = pad_side + (w - 2 * pad_side - span * scale) / 2
-        oy = h - pad_bot
-
-        def tx(x, y):
-            return ox + x * scale, oy - y * scale
-
-        # Ground line
-        gx1 = ox - 20
-        gx2 = ox + span * scale + 20
-        gy = oy
+        # Ground line — use tx(0,0) and tx(span,0) for endpoints
+        oy = self.tx(0, 0)[1]  # screen Y of ground line
+        gx1, gy = self.tx(0, 0)
+        gx2 = self.tx(span, 0)[0]
+        gx1 -= 20
+        gx2 += 20
         self.create_line(gx1, gy, gx2, gy, fill=COLORS["fg_dim"], width=1, dash=(4, 2))
 
         # Transform nodes
-        ns = {k: tx(*v) for k, v in nodes.items()}
+        ns = {k: self.tx(*v) for k, v in nodes.items()}
 
         # Merge any extra topology nodes supplied by the diagram payload
         # (e.g. crane bracket nodes with IDs outside the hardcoded 1-5 range).
@@ -314,7 +361,7 @@ class FramePreview(tk.Canvas):
         if diagram and "topology_nodes" in diagram:
             for nid, (wx, wy) in diagram["topology_nodes"].items():
                 if nid not in ns:
-                    ns[nid] = tx(wx, wy)
+                    ns[nid] = self.tx(wx, wy)
 
         # Members — when δ diagram is active, draw the undeformed frame as
         # thin dimmed outline so small column deflections (only a few pixels
@@ -338,8 +385,8 @@ class FramePreview(tk.Canvas):
         crane_h = geom.get("crane_rail_height")
         if crane_h is not None and 0 < crane_h < eave:
             # Draw bracket markers on each column
-            bracket_left = tx(0, crane_h)
-            bracket_right = tx(span, crane_h)
+            bracket_left = self.tx(0, crane_h)
+            bracket_right = self.tx(span, crane_h)
             ns["bracket_left"] = bracket_left
             ns["bracket_right"] = bracket_right
             br = 5
@@ -391,14 +438,14 @@ class FramePreview(tk.Canvas):
 
         # UDL load arrows
         if loads:
-            self._draw_loads(loads, ns, scale)
+            self._draw_loads(loads, ns, self._view_zoom)
 
         # ── Dimension annotations (all as draggable labels) ──
         dim_col = COLORS["fg_dim"]
 
         # Span
-        left_base_sx = ns[base_node_ids[0]][0] if base_node_ids else ox
-        right_base_sx = ns[base_node_ids[-1]][0] if len(base_node_ids) >= 2 else ox + span * scale
+        left_base_sx = ns[base_node_ids[0]][0] if base_node_ids else self.tx(0, 0)[0]
+        right_base_sx = ns[base_node_ids[-1]][0] if len(base_node_ids) >= 2 else self.tx(span, 0)[0]
         dim_y = min(oy + 28, h - 20)
         self.create_line(left_base_sx, dim_y, right_base_sx, dim_y,
                          fill=dim_col, width=1, arrow="both")
@@ -488,6 +535,12 @@ class FramePreview(tk.Canvas):
 
         # Resolve label overlaps
         self._resolve_overlaps()
+        self._draw_hud()
+
+    def _draw_hud(self):
+        """Draw HUD controls (Normalize + [-] M [+]) in top-right corner.
+        Implemented in full in Task 7."""
+        pass
 
     # ── Force diagram drawing ──
 
