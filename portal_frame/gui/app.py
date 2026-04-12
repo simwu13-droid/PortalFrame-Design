@@ -159,7 +159,7 @@ class PortalFrameApp(tk.Tk):
             values=["M", "V", "N", "δ"], state="readonly", font=FONT_MONO, width=4)
         self.diagram_type_combo.pack(side="left", padx=4)
         self.diagram_type_combo.bind("<<ComboboxSelected>>",
-                                      lambda _: self._draw_preview())
+                                      lambda _: self._on_diagram_type_changed())
 
         right.rowconfigure(1, weight=1)
 
@@ -1360,6 +1360,15 @@ class PortalFrameApp(tk.Tk):
         (load case dropdown, diagram selection), call _draw_preview() directly.
         """
         self._invalidate_analysis()
+        self._draw_preview()
+
+    def _on_diagram_type_changed(self):
+        """Handle diagram type combobox change — notify preview and redraw."""
+        dtype = self.diagram_type_var.get()
+        # Map combobox values to scale keys used by _diagram_scales
+        # "delta" (Unicode δ) maps to "D"; M/V/N pass through unchanged
+        scale_key = {"M": "M", "V": "V", "N": "N", "\u03b4": "D"}.get(dtype, dtype)
+        self.preview.set_diagram_type(scale_key)
         self._draw_preview()
 
     def _draw_preview(self, *_):

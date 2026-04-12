@@ -386,6 +386,18 @@ class FramePreview(tk.Canvas):
     # ── Main draw ──
 
     def update_frame(self, geom: dict, supports: tuple, loads: dict = None, diagram: dict = None):
+        # Detect geometry change -> mark view dirty for auto-refit
+        old_geom = self._geom
+        if old_geom is not None and geom is not None:
+            for key in ("span", "eave_height", "roof_pitch", "roof_pitch_2",
+                        "roof_type", "apex_x", "ridge_height", "crane_rail_height"):
+                if geom.get(key) != old_geom.get(key):
+                    self._view_dirty = True
+                    # Roof type change is major topology change -> reset scales
+                    if key == "roof_type":
+                        self._diagram_scales = {k: 1.0 for k in self._diagram_scales}
+                    break
+
         self._geom = geom
         self._supports = supports
         self._loads = loads
