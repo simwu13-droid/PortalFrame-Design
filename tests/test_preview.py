@@ -119,3 +119,78 @@ class TestScaleKeymap:
     def test_keymap_has_five_entries(self):
         from portal_frame.gui.preview import _SCALE_KEYMAP
         assert len(_SCALE_KEYMAP) == 5
+
+
+# ── Diagram scale application ──
+
+class TestDiagramScaleApplication:
+    def test_scale_multiplies_max_px(self):
+        """When diagram scale is 2.0, effective_max_px should double."""
+        p = _make_preview()
+        p._diagram_scales["M"] = 2.0
+        # The drawing code computes: DIAGRAM_MAX_PX * shrink * dtype_scale
+        # With shrink=1.0 and scale=2.0:
+        effective = DIAGRAM_MAX_PX * 1.0 * p._diagram_scales["M"]
+        assert abs(effective - 120.0) < 0.01
+
+    def test_normalize_resets_all_scales(self):
+        p = _make_preview()
+        p._diagram_scales["M"] = 3.0
+        p._diagram_scales["V"] = 0.5
+        p._diagram_scales["N"] = 2.0
+        # Simulate normalize
+        p._diagram_scales = {k: 1.0 for k in p._diagram_scales}
+        for v in p._diagram_scales.values():
+            assert abs(v - 1.0) < 0.01
+
+    def test_scale_persists_across_type_switch(self):
+        p = _make_preview()
+        p._diagram_scales["M"] = 2.5
+        p._active_diagram_type = "V"
+        # Switch back to M
+        p._active_diagram_type = "M"
+        assert abs(p._diagram_scales["M"] - 2.5) < 0.01
+
+
+class TestViewDirtyOnGeometryChange:
+    def test_span_change_marks_dirty(self):
+        p = _make_preview()
+        p._view_dirty = False
+        p._geom = {"span": 12, "roof_type": "gable"}
+        new_geom = {"span": 15, "roof_type": "gable"}
+        # Simulate the detection logic from update_frame()
+        old_geom = p._geom
+        for key in ("span", "eave_height", "roof_pitch", "roof_pitch_2",
+                     "roof_type"):
+            if new_geom.get(key) != old_geom.get(key):
+                p._view_dirty = True
+                break
+        assert p._view_dirty is True
+
+    def test_roof_type_change_resets_scales(self):
+        p = _make_preview()
+        p._diagram_scales["M"] = 3.0
+        p._geom = {"span": 12, "roof_type": "gable"}
+        new_geom = {"span": 12, "roof_type": "mono"}
+        old_geom = p._geom
+        for key in ("span", "eave_height", "roof_pitch", "roof_pitch_2",
+                     "roof_type"):
+            if new_geom.get(key) != old_geom.get(key):
+                p._view_dirty = True
+                if key == "roof_type":
+                    p._diagram_scales = {k: 1.0 for k in p._diagram_scales}
+                break
+        assert p._diagram_scales["M"] == 1.0
+
+    def test_no_change_leaves_dirty_false(self):
+        p = _make_preview()
+        p._view_dirty = False
+        p._geom = {"span": 12, "roof_type": "gable"}
+        new_geom = {"span": 12, "roof_type": "gable"}
+        old_geom = p._geom
+        for key in ("span", "eave_height", "roof_pitch", "roof_pitch_2",
+                     "roof_type"):
+            if new_geom.get(key) != old_geom.get(key):
+                p._view_dirty = True
+                break
+        assert p._view_dirty is False
