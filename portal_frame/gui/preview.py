@@ -18,6 +18,19 @@ DIAGRAM_MAX_PX = 60
 _DIAGRAM_PAD = 20
 _DIAGRAM_LABEL_EXTRA = 12
 
+# Keyboard shortcut -> diagram type for hold-and-scroll scaling.
+# Extend this dict to add custom shortcuts in the future.
+_SCALE_KEYMAP = {
+    "m": "M",   # Moment
+    "n": "N",   # Axial
+    "s": "V",   # Shear
+    "d": "D",   # Deflection (delta)
+    "f": "F",   # Load display
+}
+
+# HUD display letter for each diagram type (user-facing, matches keyboard shortcut)
+_HUD_DISPLAY_LETTER = {"M": "M", "V": "S", "N": "N", "D": "D", "F": "F"}
+
 
 def _envelope_label_parts(is_envelope: bool, is_min: bool) -> tuple[str, str]:
     """Return (text_prefix, label_key_suffix) for envelope max/min peak labels."""
@@ -54,9 +67,35 @@ class FramePreview(tk.Canvas):
         # User-adjusted label offsets: key -> (dx, dy) from original position
         self._label_offsets = {}
 
+        # ── View state (explicit, replaces auto-fit closure) ──
+        self._view_cx = 0.0       # World X at canvas center
+        self._view_cy = 0.0       # World Y at canvas center
+        self._view_zoom = 1.0     # Pixels per meter
+        self._view_zoom_base = 1.0  # Fit-to-window zoom (for clamping)
+        self._view_dirty = True   # When True, next draw recomputes fit
+
+        # Diagram amplitude scales — independent per type, persist across switches
+        self._diagram_scales = {"M": 1.0, "V": 1.0, "N": 1.0, "D": 1.0, "F": 1.0}
+
+        # Keyboard modifier tracking for hold-and-scroll scaling
+        self._active_modifier = None  # Current held key from _SCALE_KEYMAP
+        self._active_diagram_type = "M"  # Synced from app.py combobox
+
+        # Pan state
+        self._pan_start = None
+
     def _on_resize(self, *_):
         if self._geom:
             self.update_frame(self._geom, self._supports, self._loads, self._diagram)
+
+    def tx(self, x, y):
+        """World coordinates -> screen coordinates using explicit view state."""
+        w = getattr(self, '_fake_w', None) or self.winfo_width()
+        h = getattr(self, '_fake_h', None) or self.winfo_height()
+        cx = w / 2.0
+        cy = h / 2.0
+        return (cx + (x - self._view_cx) * self._view_zoom,
+                cy - (y - self._view_cy) * self._view_zoom)
 
     # ── Draggable label infrastructure ──
 
