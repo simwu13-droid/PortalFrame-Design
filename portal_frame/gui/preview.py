@@ -344,12 +344,11 @@ class FramePreview(tk.Canvas):
             self._fit_to_window(geom, loads)
 
         # Ground line — use tx(0,0) and tx(span,0) for endpoints
-        oy = self.tx(0, 0)[1]  # screen Y of ground line
-        gx1, gy = self.tx(0, 0)
+        gx1, ground_sy = self.tx(0, 0)  # ground_sy = screen Y of world Y=0
         gx2 = self.tx(span, 0)[0]
         gx1 -= 20
         gx2 += 20
-        self.create_line(gx1, gy, gx2, gy, fill=COLORS["fg_dim"], width=1, dash=(4, 2))
+        self.create_line(gx1, ground_sy, gx2, ground_sy, fill=COLORS["fg_dim"], width=1, dash=(4, 2))
 
         # Transform nodes
         ns = {k: self.tx(*v) for k, v in nodes.items()}
@@ -446,7 +445,7 @@ class FramePreview(tk.Canvas):
         # Span
         left_base_sx = ns[base_node_ids[0]][0] if base_node_ids else self.tx(0, 0)[0]
         right_base_sx = ns[base_node_ids[-1]][0] if len(base_node_ids) >= 2 else self.tx(span, 0)[0]
-        dim_y = min(oy + 28, h - 20)
+        dim_y = min(ground_sy + 28, h - 20)
         self.create_line(left_base_sx, dim_y, right_base_sx, dim_y,
                          fill=dim_col, width=1, arrow="both")
         self._create_label(
@@ -463,9 +462,9 @@ class FramePreview(tk.Canvas):
         if roof_type == "gable":
             # Ridge height
             dx2 = ns[3][0] + 20
-            self.create_line(dx2, oy, dx2, ns[3][1], fill=dim_col, width=1, arrow="both")
+            self.create_line(dx2, ground_sy, dx2, ns[3][1], fill=dim_col, width=1, arrow="both")
             self._create_label(
-                dx2 + 8, (oy + ns[3][1]) / 2,
+                dx2 + 8, (ground_sy + ns[3][1]) / 2,
                 f"{ridge:.2f} m", "dim_ridge", fill=dim_col, anchor="w")
 
             # Apex horizontal distance
