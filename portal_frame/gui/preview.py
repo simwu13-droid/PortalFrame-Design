@@ -85,6 +85,16 @@ class FramePreview(tk.Canvas):
         # Pan state
         self._pan_start = None
 
+        # ── Event bindings for pan/zoom/keyboard ──
+        self.bind("<ButtonPress-2>", self._on_pan_start)
+        self.bind("<B2-Motion>", self._on_pan_move)
+        self.bind("<ButtonRelease-2>", self._on_pan_end)
+        self.bind("<Double-Button-2>", self._on_zoom_extents)
+        self.bind("<MouseWheel>", self._on_wheel)
+        self.bind("<KeyPress>", self._on_key_press)
+        self.bind("<KeyRelease>", self._on_key_release)
+        self.bind("<Enter>", lambda e: self.focus_set())
+
     def _on_resize(self, *_):
         if self._geom:
             self.update_frame(self._geom, self._supports, self._loads, self._diagram)
@@ -97,6 +107,95 @@ class FramePreview(tk.Canvas):
         cy = h / 2.0
         return (cx + (x - self._view_cx) * self._view_zoom,
                 cy - (y - self._view_cy) * self._view_zoom)
+
+    # ── Pan handlers ──
+
+    def _on_pan_start(self, event):
+        self._pan_start = (event.x, event.y)
+        self.config(cursor="fleur")
+
+    def _on_pan_move(self, event):
+        if self._pan_start is None:
+            return
+        dx_px = event.x - self._pan_start[0]
+        dy_px = event.y - self._pan_start[1]
+        if self._view_zoom > 0:
+            self._view_cx -= dx_px / self._view_zoom
+            self._view_cy += dy_px / self._view_zoom
+        self._pan_start = (event.x, event.y)
+        if self._geom:
+            self.update_frame(self._geom, self._supports, self._loads, self._diagram)
+
+    def _on_pan_end(self, event):
+        self._pan_start = None
+        self.config(cursor="")
+
+    # ── Zoom handler ──
+
+    def _on_wheel(self, event):
+        """Mouse wheel: zoom (no modifier) or scale active diagram (held key)."""
+        scroll_up = event.delta > 0
+
+        # Held key -> scale the corresponding diagram type
+        if self._active_modifier is not None:
+            dtype = _SCALE_KEYMAP.get(self._active_modifier)
+            if dtype:
+                factor = 1.15 if scroll_up else (1.0 / 1.15)
+                self._diagram_scales[dtype] = max(0.1, min(10.0,
+                    self._diagram_scales[dtype] * factor))
+                if self._geom:
+                    self.update_frame(self._geom, self._supports, self._loads, self._diagram)
+                return
+
+        # No modifier -> zoom toward cursor
+        factor = 1.1 if scroll_up else (1.0 / 1.1)
+        new_zoom = self._view_zoom * factor
+
+        min_zoom = self._view_zoom_base * 0.1
+        max_zoom = self._view_zoom_base * 20.0
+        new_zoom = max(min_zoom, min(max_zoom, new_zoom))
+
+        if abs(new_zoom - self._view_zoom) < 1e-9:
+            return
+
+        # Keep the world point under the cursor fixed during zoom
+        w = self.winfo_width()
+        h = self.winfo_height()
+        cx, cy = w / 2.0, h / 2.0
+        wx = self._view_cx + (event.x - cx) / self._view_zoom
+        wy = self._view_cy - (event.y - cy) / self._view_zoom
+        self._view_cx = wx - (event.x - cx) / new_zoom
+        self._view_cy = wy + (event.y - cy) / new_zoom
+        self._view_zoom = new_zoom
+
+        if self._geom:
+            self.update_frame(self._geom, self._supports, self._loads, self._diagram)
+
+    def _on_zoom_extents(self, event):
+        """Double-click middle mouse: refit view to frame (Autodesk-style zoom extents).
+        Leaves diagram amplitude scales untouched."""
+        self._view_dirty = True
+        if self._geom:
+            self.update_frame(self._geom, self._supports, self._loads, self._diagram)
+
+    # ── Keyboard modifier tracking ──
+
+    def _on_key_press(self, event):
+        key = event.keysym.lower()
+        if key in _SCALE_KEYMAP:
+            self._active_modifier = key
+
+    def _on_key_release(self, event):
+        key = event.keysym.lower()
+        if key == self._active_modifier:
+            self._active_modifier = None
+
+    def set_diagram_type(self, dtype: str):
+        """Called by app.py when the diagram type combobox changes.
+        Updates the active type so the HUD shows the correct letter."""
+        self._active_diagram_type = dtype
+        if self._geom:
+            self.update_frame(self._geom, self._supports, self._loads, self._diagram)
 
     def _fit_to_window(self, geom, loads=None):
         """Compute view_cx, view_cy, view_zoom to fit the frame in the canvas.
