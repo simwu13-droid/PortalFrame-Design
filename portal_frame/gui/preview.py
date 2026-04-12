@@ -119,6 +119,7 @@ class FramePreview(tk.Canvas):
             return
         dx_px = event.x - self._pan_start[0]
         dy_px = event.y - self._pan_start[1]
+        # Convert pixel delta to world delta (y is flipped: screen-down = world-up negative)
         if self._view_zoom > 0:
             self._view_cx -= dx_px / self._view_zoom
             self._view_cy += dy_px / self._view_zoom
