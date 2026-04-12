@@ -637,9 +637,104 @@ class FramePreview(tk.Canvas):
         self._draw_hud()
 
     def _draw_hud(self):
-        """Draw HUD controls (Normalize + [-] M [+]) in top-right corner.
-        Implemented in full in Task 7."""
-        pass
+        """Draw HUD controls in top-right corner: [Normalize]  [-] M [+]
+
+        Controls are drawn as canvas items (not tk widgets) so they blend
+        with the dark canvas theme. All items tagged "hud" for clean redraw.
+        """
+        w = self.winfo_width()
+        if w < 200:
+            return
+
+        margin = 8
+        btn_h = 22
+        btn_pad_x = 8
+        gap = 6
+
+        bg = COLORS["hud_bg"]
+        bg_hover = COLORS["hud_bg_hover"]
+        border_col = COLORS["border"]
+        fg = COLORS["fg_dim"]
+        fg_hover = COLORS["fg_bright"]
+
+        def draw_button(cx, top_y, text, click_handler, text_color=None):
+            """Draw a rect+text button centered at cx. Returns (x1, x2)."""
+            if text_color is None:
+                text_color = fg
+            text_w = len(text) * 7 + 2 * btn_pad_x
+            x1 = cx - text_w / 2
+            x2 = cx + text_w / 2
+            y1 = top_y
+            y2 = top_y + btn_h
+
+            rect = self.create_rectangle(x1, y1, x2, y2,
+                fill=bg, outline=border_col, width=1, tags=("hud",))
+            txt = self.create_text((x1 + x2) / 2, (y1 + y2) / 2,
+                text=text, fill=text_color, font=FONT_SMALL, tags=("hud",))
+
+            for item in (rect, txt):
+                self.tag_bind(item, "<Enter>",
+                    lambda e, r=rect, t=txt: (
+                        self.itemconfig(r, fill=bg_hover),
+                        self.itemconfig(t, fill=fg_hover),
+                        self.config(cursor="hand2")))
+                self.tag_bind(item, "<Leave>",
+                    lambda e, r=rect, t=txt, tc=text_color: (
+                        self.itemconfig(r, fill=bg),
+                        self.itemconfig(t, fill=tc),
+                        self.config(cursor="")))
+                self.tag_bind(item, "<ButtonRelease-1>",
+                    lambda e, h=click_handler: h())
+
+            return x1, x2
+
+        # Active diagram type and color for the middle label
+        dtype = self._active_diagram_type
+        display_letter = _HUD_DISPLAY_LETTER.get(dtype, dtype)
+        dtype_color = DIAGRAM_COLORS.get(
+            {"D": "\u03b4"}.get(dtype, dtype),
+            COLORS["fg_bright"])
+
+        top_y = margin
+
+        # Layout right-to-left: [+] ... letter ... [-] ... [Normalize]
+        # [+] button (rightmost)
+        plus_cx = w - margin - 16
+        def on_plus():
+            key = self._active_diagram_type
+            self._diagram_scales[key] = min(10.0,
+                self._diagram_scales.get(key, 1.0) * 1.15)
+            if self._geom:
+                self.update_frame(self._geom, self._supports,
+                                  self._loads, self._diagram)
+        x1_plus, _ = draw_button(plus_cx, top_y, "+", on_plus)
+
+        # Type label between [-] and [+]
+        label_cx = x1_plus - gap - 7
+        self.create_text(label_cx, top_y + btn_h / 2,
+            text=display_letter, fill=dtype_color,
+            font=FONT_SMALL, tags=("hud",))
+
+        # [-] button
+        minus_cx = label_cx - gap - 16
+        def on_minus():
+            key = self._active_diagram_type
+            self._diagram_scales[key] = max(0.1,
+                self._diagram_scales.get(key, 1.0) / 1.15)
+            if self._geom:
+                self.update_frame(self._geom, self._supports,
+                                  self._loads, self._diagram)
+        x1_minus, _ = draw_button(minus_cx, top_y, "-", on_minus)
+
+        # [Normalize] button
+        norm_cx = x1_minus - gap - 35
+        def on_normalize():
+            self._diagram_scales = {k: 1.0 for k in self._diagram_scales}
+            self._view_dirty = True
+            if self._geom:
+                self.update_frame(self._geom, self._supports,
+                                  self._loads, self._diagram)
+        draw_button(norm_cx, top_y, "Normalize", on_normalize)
 
     # ── Force diagram drawing ──
 
