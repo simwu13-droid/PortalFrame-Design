@@ -74,7 +74,8 @@ class FramePreview(tk.Canvas):
         self._view_zoom_base = 1.0  # Fit-to-window zoom (for clamping)
         self._view_dirty = True   # When True, next draw recomputes fit
 
-        # Diagram amplitude scales — independent per type, persist across switches
+        # Diagram amplitude scales — independent per type, persist across switches.
+        # "F" is the load-arrow display scale, not a force-diagram type (no color/unit).
         self._diagram_scales = {"M": 1.0, "V": 1.0, "N": 1.0, "D": 1.0, "F": 1.0}
 
         # Keyboard modifier tracking for hold-and-scroll scaling
