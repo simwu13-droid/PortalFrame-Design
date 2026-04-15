@@ -48,6 +48,10 @@ portal_frame/
   solvers/         Engine-agnostic analysis interface
     base.py          AnalysisSolver ABC, AnalysisRequest, AnalysisResults
     spacegass.py     SpaceGassSolver (export-only, analysis done externally)
+    pynite_solver.py PyNiteSolver — in-app FEM, per-station M/V/N/dy_local/dx_local
+  analysis/        Post-processing and combinations (solver-agnostic)
+    results.py       MemberStationResult, MemberResult, CaseResult, AnalysisOutput
+    combinations.py  combine_case_results() (linear superposition), compute_envelopes, compute_envelope_curves
   gui/             Tkinter desktop GUI
     theme.py         COLORS, FONT constants
     widgets.py       LabeledEntry, LabeledCombo
@@ -161,7 +165,7 @@ Forces split equally to eave nodes: F_node = V/2
 - LoadCategory is an integer (e.g. `1`), NOT empty
 
 ## Testing
-- Unit tests: `python -m pytest tests/ -v` (119 tests covering standards, models, output, crane)
+- Unit tests: `python -m pytest tests/ -v` (144 tests covering standards, models, output, crane, PyNite solver)
 - GUI launch test: `python -m portal_frame.run_gui &`, wait a few seconds, then `tasklist | grep python`
 - SpaceGass output files must be opened in SpaceGass v14.25 to verify format correctness.
 - Output verification: generate with both old wrapper and new package, `diff` must show identical output.
@@ -180,6 +184,47 @@ Forces split equally to eave nodes: F_node = V/2
 - Combinations: with/without crane sets (crane not always at this frame)
 - Crane seismic: F_crane = Cd × (Gc + 0.6×Qc) / 2 per bracket node (NOT at eave nodes)
 - GUI: Crane tab with enable/disable, rail height, Gc/Qc per bracket, dynamic transverse ULS/SLS rows
+
+## PyNite Solver (In-App FEM)
+
+**Status: IMPLEMENTED** — in-app analysis for M/V/N/δ diagrams + ULS/SLS envelopes. Separate from SpaceGass export (unchanged).
+
+### Package
+- Pip package: `PyNiteFEA` (v2.4.1). Import as `from Pynite import FEModel3D`. Pulls scipy (~117 MB), numpy (~33 MB), matplotlib (~29 MB, unused — exclude in build.spec to save ~25 MB).
+- 2D portal frame uses 3D solver with out-of-plane DOFs restrained: `model.def_support(nid, False, False, True, True, True, False)` on all nodes.
+
+### Sign conventions (stored in MemberStationResult)
+- `axial`: +ve = tension (negated from PyNite raw)
+- `moment`: +ve = sagging (negated from PyNite raw)
+- `dy_local`: +ve = sagging/into-frame-interior (negated from PyNite raw)
+- `dx_local`: **NOT negated** (raw PyNite, used only by δ renderer for rotation back to global)
+
+### PyNite local coordinate system (empirically verified)
+- Horizontal/tilted beam: local-x along member i→j; local-y is 90° CCW from local-x in world XY plane.
+- Vertical column (base→top): local-x = +Y global, local-y = **−X global**, local-z = +Z global (out-of-plane).
+- Vertical member Iy/Iz ordering matters: `add_section(name, A, Iy, Iz, J)` — for 2D frame bending, Iz is the in-plane strong axis.
+
+### Deflection diagram rotation formula (LOAD-BEARING — do not refactor casually)
+In `preview.py::_draw_deflection_diagram()`, global displacement is reconstructed from member-local `(dx_local, dy_local)` via:
+- `Δscreen_x = α × (dx_local × mdx − dy_local × mdy) / L`
+- `Δscreen_y = α × (dx_local × mdy + dy_local × mdx) / L`
+
+This guarantees curves meet at shared nodes (apex, knee, crane brackets). Any sign/argument change here breaks continuity.
+
+### Crane bracket gotcha
+- `_insert_crane_brackets()` adds bracket nodes with IDs outside the hardcoded 1-5 range (e.g. 6, 7 for gable) and replaces column members with sub-members referencing those IDs.
+- `update_frame()` builds its local `ns` dict from hardcoded keys — to render diagrams on column sub-members, `_build_diagram_data()` must pass `topology_nodes` dict and `update_frame()` merges them via `tx()`.
+
+### combinations.py field-tuple pattern
+Add new per-station fields to `_STATION_FIELDS`, per-node to `_NODE_FIELDS`, per-reaction to `_REACTION_FIELDS` at the top of `combinations.py`. Both `combine_case_results()` (linear superposition) and `_build_envelope_pair()` (max/min walk) iterate these tuples via getattr/setattr — adding a field in one place propagates to both.
+
+### Dataclass field-name gotchas (hit when writing ad-hoc diagnostic scripts)
+- `PortalFrameGeometry`: `roof_pitch`, `roof_pitch_2` (NOT `_deg` suffix — degrees implied)
+- `RafterZoneLoad`: `start_pct, end_pct, pressure` (single segment, no `segments=` list)
+- `LoadInput`: `dead_load_roof, dead_load_wall, live_load_roof` (NOT `dead_load=`/`live_load=`)
+- `CraneInputs`: `rail_height, dead_left, dead_right, live_left, live_right` (NOT `enabled=`/`left_Gc=`)
+- `AnalysisRequest`: `span`, `eave_height`, `roof_pitch`, `bay_spacing` as separate fields (NOT nested `geometry=`)
+- `io.section_library`: use `load_all_sections() -> dict` (NOT `load_library()`)
 
 ## Packaging
 - `pyinstaller build.spec --clean -y` builds single .exe to `dist/PortalFrameGenerator.exe`

@@ -646,7 +646,31 @@ class FramePreview(tk.Canvas):
 
         # Resolve label overlaps
         self._resolve_overlaps()
+
+        # Axis indicator (bottom-left corner)
+        self._draw_axis_indicator()
+
         self._draw_hud()
+
+    def _draw_axis_indicator(self):
+        """Draw X/Y axis indicator in bottom-left corner."""
+        h = self.winfo_height()
+        ox, oy = 35, h - 35  # Origin point
+        length = 25
+        arrow_col = COLORS["fg_dim"]
+        label_col = COLORS["fg_bright"]
+
+        # X axis (rightward)
+        self.create_line(ox, oy, ox + length, oy,
+                         fill=arrow_col, width=2, arrow="last")
+        self.create_text(ox + length + 8, oy, text="X",
+                         fill=label_col, font=FONT_SMALL, anchor="w")
+
+        # Y axis (upward)
+        self.create_line(ox, oy, ox, oy - length,
+                         fill=arrow_col, width=2, arrow="last")
+        self.create_text(ox, oy - length - 8, text="Y",
+                         fill=label_col, font=FONT_SMALL, anchor="s")
 
     def _draw_hud(self):
         """Draw HUD controls in top-right corner: [Normalize]  [-] M [+]
@@ -896,9 +920,8 @@ class FramePreview(tk.Canvas):
                 for pt in reversed(diagram_pts):
                     poly_pts.extend(pt)
 
-                # For δ and for envelopes, skip the filled polygon —
-                # draw only the curve line for clarity.
-                draw_fill = not is_deflection and not is_envelope
+                # For δ, skip the filled polygon — draw only the curve line.
+                draw_fill = not is_deflection
                 if draw_fill and len(poly_pts) >= 6:
                     self.create_polygon(
                         *poly_pts, fill="", outline=color, width=2,
@@ -1126,15 +1149,19 @@ class FramePreview(tk.Canvas):
                     # Extend label slightly beyond the peak
                     dmag_screen = math.hypot(dsx, dsy)
                     if dmag_screen > 1e-6:
-                        nudge = 12.0 / dmag_screen
+                        nudge = 18.0 / dmag_screen
                         lx = base_x + dsx * (1.0 + nudge)
                         ly = base_y + dsy * (1.0 + nudge)
                     else:
                         lx = base_x
                         ly = base_y
                     prefix, key_suffix = _envelope_label_parts(is_envelope, is_min)
+                    # Global displacements from screen delta (Y flipped)
+                    dx_mm = dsx / alpha
+                    dy_mm = -dsy / alpha
                     self._create_label(
-                        lx, ly, f"{prefix}{dy_local:.1f} mm",
+                        lx, ly,
+                        f"{prefix}x: {dx_mm:.1f}mm\ny: {dy_mm:.1f}mm",
                         f"diag_{mid}_δ{key_suffix}", fill=color)
 
         _draw_curves(data, data_dx, is_min=False)
