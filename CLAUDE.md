@@ -41,6 +41,9 @@ portal_frame/
     wind_nzs1170_2.py           Wind pressure tables & 8-case generation
     combinations_nzs1170_0.py   ULS/SLS load combinations + LoadCombination dataclass
     earthquake_nzs1170_5.py     NZS 1170.5:2004 equivalent static method
+    cfs_span_table.py           Formsteel span table loader (CFS_Span_Table.xlsx)
+    cfs_check.py                AS/NZS 4600 ULS member capacity checks
+    serviceability.py           SLS apex deflection + eave drift checks
   io/              File I/O — reading and writing
     section_library.py   XML library parsing (find, parse, load, get)
     spacegass_writer.py  SpaceGass v14 text output (SpaceGassWriter class)
@@ -50,8 +53,8 @@ portal_frame/
     spacegass.py     SpaceGassSolver (export-only, analysis done externally)
     pynite_solver.py PyNiteSolver — in-app FEM, per-station M/V/N/dy_local/dx_local
   analysis/        Post-processing and combinations (solver-agnostic)
-    results.py       MemberStationResult, MemberResult, CaseResult, AnalysisOutput
-    combinations.py  combine_case_results() (linear superposition), compute_envelopes, compute_envelope_curves
+    results.py       MemberStationResult, MemberResult, CaseResult, AnalysisOutput, MemberDesignCheck, SLSCheck
+    combinations.py  combine_case_results() (linear superposition), compute_envelopes, compute_envelope_curves (ULS, SLS, SLS Wind Only)
   gui/             Tkinter desktop GUI
     theme.py         COLORS, FONT constants
     widgets.py       LabeledEntry, LabeledCombo
@@ -61,7 +64,9 @@ portal_frame/
     tabs/            (empty — tabs currently built inline in app.py)
   cli.py           CLI entry point
   run_gui.py       GUI entry point
-tests/             119 unit tests (standards, models, output, crane integration)
+tests/             206 unit tests (standards, models, output, crane, PyNite solver, CFS checks, serviceability)
+docs/
+  CFS_Span_Table.xlsx  Formsteel span table (P kN + Mx kNm sheets, 1m–25m columns)
 ```
 
 **Backward-compatible wrappers** (root level):
@@ -84,6 +89,9 @@ tests/             119 unit tests (standards, models, output, crane integration)
 | New solver | `solvers/new_solver.py` implementing `AnalysisSolver` |
 | New output format | `io/new_writer.py` (e.g., DXF, IFC) |
 | New section type | `models/sections.py` |
+| New capacity check | Add lookup in `standards/cfs_span_table.py`, add check in `standards/cfs_check.py` |
+| New SLS metric | Add check function in `standards/serviceability.py`, wire in `app.py::_run_design_checks()` |
+| New span table section | Add entry to `LIBRARY_TO_SPANTABLE` dict in `cfs_span_table.py` |
 
 ## Critical Domain Knowledge
 
@@ -164,8 +172,87 @@ Forces split equally to eave nodes: F_node = V/2
 - 9 columns: `Case,Node,FX,FY,FZ,MX,MY,MZ,LoadCategory`
 - LoadCategory is an integer (e.g. `1`), NOT empty
 
+## CFS Member Design Check (AS/NZS 4600)
+
+**Status: IMPLEMENTED** — ULS bending, axial, combined via Formsteel span table lookup. Shear deferred (table not yet provided).
+
+### Implementation
+- `standards/cfs_span_table.py`: loads `docs/CFS_Span_Table.xlsx`, provides `phi_Nc(library_name, L_m)` and `phi_Mbx(library_name, L_m)` with linear interpolation and endpoint clamping (1m–25m range)
+- `standards/cfs_check.py`: `check_member()` (single member), `check_all_members()` (full topology), `phi_Nt()` (tension)
+- `analysis/results.py`: `MemberDesignCheck` dataclass on `AnalysisOutput.design_checks`
+- GUI: Frame tab inputs for `col_Le` and `raf_Le` (effective lengths), results panel shows per-member utilisation with FAIL/PASS/NO_DATA colouring, HUD `[ULS]` toggle button with colour-coded member overlay and draggable boxed midpoint labels showing `util\ncombo_name`
+
+### Section Name Mapping
+SpaceGass library names differ from span table names. Static mapping in `LIBRARY_TO_SPANTABLE`:
+```
+63020N -> G550 63020N        63020S1 -> G550 63020NS1
+63020S2 -> G550 63020NS2     50020 -> G550 50020
+270115 -> G550 270115        650180295S2 -> Superspan 650x180x2.95 2S
+```
+The 63020 family uses convention: N = nested base, S1/S2 = stiffener variant. Sections without entries (100x1, 27075, etc.) return `None` -> `NO_DATA` status.
+
+### Key Formulas
+```
+Tension:    phi_Nt = 0.85 * kt * An * fu  (kt=1, An=Ag, fu=550 MPa for G550)
+Axial util: max(|N*c|/phi_Nc, N*t/phi_Nt)
+Bending:    M*/phi_Mbx
+Combined:   util_axial + util_bending <= 1.0  (simple linear interaction)
+```
+PASS if combined <= 1.0, FAIL otherwise. Moment amplification (Cl 3.5.1 alpha_n) intentionally omitted — linear interaction is conservative.
+
+### Canvas Overlay
+HUD `[ULS]` button toggles per-member colour overlay (green <= 0.85, amber <= 1.0, red > 1.0, grey = NO_DATA). Each member gets a draggable boxed label showing `util\nULS-X` where ULS-X is the dominant combo (moment combo when bending dominates, axial combo otherwise). Mutually exclusive with SLS overlay.
+
+## Serviceability Checks (SLS)
+
+**Status: IMPLEMENTED** — apex vertical deflection + eave horizontal drift, each split into wind and earthquake categories.
+
+### Implementation
+- `standards/serviceability.py`: `check_apex_deflection()` and `check_eave_drift()` — pure functions, span derived from topology via `_topology_span_m()` to avoid input-staleness
+- `analysis/results.py`: `SLSCheck` dataclass on `AnalysisOutput.sls_checks`
+- `analysis/combinations.py`: `compute_envelope_curves()` now also builds `sls_wind_only_envelope_curves` filtered by description substring `"wind only"`
+- GUI: Frame tab inputs for apex limits (span/X for wind and EQ) and drift limits (h/X for wind and EQ), results panel shows grouped rows, HUD `[SLS]` toggle button with rafter colour overlay and draggable apex + drift badges
+
+### SLS Metrics
+- **Apex vertical deflection** (`apex_dy`): worst |dy| at the highest-y topology node, reference = span, symbol = L
+- **Eave horizontal drift** (`drift`): worst |dx| across all eave nodes (nodes connected to both a column and a rafter), reference = eave height, symbol = h
+- Default limits: apex L/180 (wind), L/360 (EQ); drift h/150 (wind), h/300 (EQ)
+
+### Combo Classification
+SLS combos classified by description substring: `"E+"` or `"E-"` in description -> earthquake, everything else -> wind (includes G, G+0.7Q, G+W*(s), W*(s) wind only)
+
+### Canvas Badges
+Each badge shows ALL categories for its metric (both wind and eq rows visible). Badge text shows the **actual deformation ratio** the frame reached (e.g. `L/293`), NOT the design limit. Colour reflects worst-util pass/fail. Both apex and drift badges are draggable (text + background rect move as a unit via `_label_partners` mechanism).
+
+### SLS Wind Only Envelope
+Separate envelope group (`sls_wind_only_envelope_curves`) containing only the `W*(s) wind only` SLS combos (no dead/live). Available in the diagram dropdown as "SLS Wind Only Envelope".
+
+### Dataclass field names (SLSCheck)
+- `metric`: `"apex_dy"` | `"drift"`
+- `deflection_mm`: signed value at the measured node (mm)
+- `limit_mm`: absolute limit = reference_length * 1000 / ratio
+- `ratio`: user's design limit (the X in L/X or h/X)
+- `actual_ratio`: what the frame actually deformed to (reference_length / |deflection|, capped at 9999)
+- `reference_symbol`: `"L"` for span, `"h"` for column height
+
+## HUD Controls
+
+Canvas-drawn heads-up display in top-right corner. Layout (left to right):
+```
+[DIM] [SLS] [ULS] [Normalize] [-] M [+]
+```
+- **DIM**: toggle dimension annotations (span, eave, ridge, pitches) — bright when ON, dim when OFF
+- **SLS**: toggle serviceability overlay on rafters — green when active, mutually exclusive with ULS
+- **ULS**: toggle member capacity overlay — green when active, mutually exclusive with SLS
+- **Normalize**: reset all diagram amplitude scales to 1.0
+- **[-] M [+]**: decrease/increase the active diagram type's amplitude scale
+
+Overlay state is single-slot (`_overlay_mode: "off" | "uls" | "sls"`), giving mutual exclusion for free.
+
+HUD buttons support optional tooltips (hover text drawn as canvas items, chained via `add="+"` on Enter/Leave handlers). All annotation labels (dimensions, ULS capacity, SLS badges) are draggable — offsets persist across redraws and overlay toggles.
+
 ## Testing
-- Unit tests: `python -m pytest tests/ -v` (144 tests covering standards, models, output, crane, PyNite solver)
+- Unit tests: `python -m pytest tests/ -v` (206 tests covering standards, models, output, crane, PyNite solver, CFS checks, serviceability)
 - GUI launch test: `python -m portal_frame.run_gui &`, wait a few seconds, then `tasklist | grep python`
 - SpaceGass output files must be opened in SpaceGass v14.25 to verify format correctness.
 - Output verification: generate with both old wrapper and new package, `diff` must show identical output.
@@ -229,6 +316,7 @@ Add new per-station fields to `_STATION_FIELDS`, per-node to `_NODE_FIELDS`, per
 ## Packaging
 - `pyinstaller build.spec --clean -y` builds single .exe to `dist/PortalFrameGenerator.exe`
 - Section library: tries SpaceGass install path first, falls back to bundled copy via `sys._MEIPASS`
+- CFS span table: `docs/CFS_Span_Table.xlsx` bundled into `docs/` inside the exe (same `sys._MEIPASS` fallback pattern)
 
 ## External References
 - NZ loading standards: `C:\Users\CadWork4\Formsteel\Formsteel Engineers - Documents\Simon\_3.0 NZS & REFERENCE DOCUMENTS\STANDARDS - Loading ASNZS1170\`
