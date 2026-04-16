@@ -156,11 +156,14 @@ class LabeledCombo(tk.Frame):
         return "break"
 
     def _on_focus_out(self, ev):
-        """If typed text is not valid, revert."""
+        """If typed text is not valid, revert; if valid and uncommitted, commit."""
         text = self.var.get()
-        if text not in self._all_values:
+        if text in self._all_values:
+            if text != self._last_valid:
+                self._commit(text)
+        else:
             self.var.set(self._last_valid)
-        self.combo["values"] = self._all_values
+            self.combo["values"] = self._all_values
 
     def _on_selected(self, ev):
         """List-item click or default Enter-on-highlighted-row commit."""
