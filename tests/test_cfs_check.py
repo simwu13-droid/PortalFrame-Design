@@ -8,24 +8,38 @@ from portal_frame.standards.cfs_check import (
     G550_FU_MPA, TENSION_K, check_member, phi_Nt,
 )
 from portal_frame.standards.cfs_span_table import (
-    LIBRARY_TO_SPANTABLE, has_data, phi_Mbx, phi_Nc,
+    LIBRARY_TO_SPANTABLE, has_data, phi_Mbx, phi_Nc, phi_Vy,
 )
 
 
 # ─── Span table data integrity ───────────────────────────────────────
 
 def test_every_mapping_resolves_to_real_row():
-    """Every entry in LIBRARY_TO_SPANTABLE must exist in both sheets."""
+    """Every entry in LIBRARY_TO_SPANTABLE must exist in all three sheets."""
     for lib_name in LIBRARY_TO_SPANTABLE:
         assert has_data(lib_name), f"{lib_name} missing from span table"
         assert phi_Nc(lib_name, 5.0) is not None
         assert phi_Mbx(lib_name, 5.0) is not None
+        assert phi_Vy(lib_name) is not None, f"{lib_name} missing from Vy sheet"
 
 
 def test_unmapped_section_returns_none():
     assert phi_Nc("100x1", 5.0) is None
     assert phi_Mbx("100x1", 5.0) is None
+    assert phi_Vy("100x1") is None
     assert has_data("100x1") is False
+
+
+def test_known_vy_value_63020s2():
+    """63020S2 shear capacity = 429.6 kN per span table."""
+    assert phi_Vy("63020S2") == pytest.approx(429.6, rel=1e-4)
+
+
+def test_vy_is_L_independent():
+    """phi_Vy takes no L argument — one value per section."""
+    v1 = phi_Vy("63020S2")
+    v2 = phi_Vy("63020S2")
+    assert v1 == v2 == 429.6
 
 
 def test_known_value_63020s2_at_5m():
@@ -179,3 +193,78 @@ def test_tension_governs_when_larger():
     )
     assert chk.util_axial == pytest.approx(0.5)
     assert chk.util_axial > 100.0 / pNc  # tension is the governing term
+
+
+# ─── Shear check ─────────────────────────────────────────────────────
+
+def test_shear_check_pass():
+    secs = load_all_sections()
+    sec = secs["63020S2"]
+    pVy = phi_Vy("63020S2")   # 429.6 kN
+
+    chk = check_member(
+        member_id=1, member_role="col", section=sec, L_eff=5.0,
+        N_max_compression=0.0, N_max_tension=0.0, M_max=0.0,
+        V_max=pVy / 2,   # exactly 50% util
+    )
+    assert chk.util_shear == pytest.approx(0.5)
+    assert chk.status == "PASS"
+
+
+def test_shear_check_fail():
+    secs = load_all_sections()
+    sec = secs["63020S2"]
+    pVy = phi_Vy("63020S2")
+
+    chk = check_member(
+        member_id=1, member_role="col", section=sec, L_eff=5.0,
+        N_max_compression=0.0, N_max_tension=0.0, M_max=0.0,
+        V_max=pVy * 1.1,   # 10% over
+    )
+    assert chk.util_shear == pytest.approx(1.1)
+    assert chk.status == "FAIL"
+
+
+def test_shear_fail_overrides_combined_pass():
+    """If combined passes but shear fails, overall status is FAIL."""
+    secs = load_all_sections()
+    sec = secs["63020S2"]
+    pVy = phi_Vy("63020S2")
+    pMbx = phi_Mbx("63020S2", 5.0)
+
+    chk = check_member(
+        member_id=1, member_role="col", section=sec, L_eff=5.0,
+        N_max_compression=0.0, N_max_tension=0.0,
+        M_max=0.3 * pMbx,   # util_bending = 0.3
+        V_max=1.2 * pVy,    # util_shear = 1.2 (FAIL)
+    )
+    assert chk.util_combined == pytest.approx(0.3)   # combined passes
+    assert chk.util_shear == pytest.approx(1.2)      # shear fails
+    assert chk.status == "FAIL"
+
+
+def test_shear_and_combined_both_pass():
+    secs = load_all_sections()
+    sec = secs["63020S2"]
+    pVy = phi_Vy("63020S2")
+    pMbx = phi_Mbx("63020S2", 5.0)
+
+    chk = check_member(
+        member_id=1, member_role="col", section=sec, L_eff=5.0,
+        N_max_compression=0.0, N_max_tension=0.0,
+        M_max=0.4 * pMbx,
+        V_max=0.6 * pVy,
+    )
+    assert chk.status == "PASS"
+
+
+def test_no_data_path_preserves_shear_capacity_field():
+    """Even for NO_DATA sections, phi_Vy is reported (or None if missing)."""
+    sec = _fake_section(name="100x1", Ax=500.0)
+    chk = check_member(
+        member_id=1, member_role="col", section=sec, L_eff=5.0,
+        N_max_compression=10.0, N_max_tension=0.0, M_max=2.0, V_max=5.0,
+    )
+    assert chk.status == "NO_DATA"
+    assert chk.phi_Vy is None
+    assert chk.V_max == 5.0   # force is still reported

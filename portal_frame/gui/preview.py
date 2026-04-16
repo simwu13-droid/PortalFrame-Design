@@ -659,7 +659,10 @@ class FramePreview(tk.Canvas):
         def _line(pt_a, pt_b, base_color, role, dc_key):
             if uls_on and dc_key in self._dc_groups and self._dc_groups[dc_key] is not None:
                 chk = self._dc_groups[dc_key]
-                color = self._dc_color_for(chk.status, chk.util_combined)
+                # Use the worst of (combined, shear) for colouring so the
+                # member turns red if either check fails.
+                worst_util = max(chk.util_combined, chk.util_shear)
+                color = self._dc_color_for(chk.status, worst_util)
                 width = 4
             elif sls_on and role == "raf":
                 color = sls_color
@@ -684,16 +687,25 @@ class FramePreview(tk.Canvas):
         # load case is driving the critical capacity check. Each label
         # is draggable (text + background rect move together).
         if uls_on:
-            def _dominant_combo(chk) -> str:
-                """Pick which controlling combo to surface.
+            def _dominant(chk) -> tuple[float, str, str]:
+                """Return (max_util, display_util_label, combo_name).
 
-                If bending dominates, show the moment-controlling combo;
-                otherwise the axial-controlling combo. Falls back to
-                whichever is non-empty.
+                Picks the governing check — whichever of:
+                - combined bending+axial (the usual driver),
+                - pure shear (rare but possible for deep beams)
+                has the highest utilisation. Label shows that value and its
+                controlling combo.
                 """
+                sigma = chk.util_combined
+                v = chk.util_shear
+                if v > sigma:
+                    return (v, f"V/\u03c6V={v:.2f}", chk.controlling_combo_v)
+                # Combined governs — pick the sub-combo for display
                 if chk.util_bending >= chk.util_axial:
-                    return chk.controlling_combo_m or chk.controlling_combo_n
-                return chk.controlling_combo_n or chk.controlling_combo_m
+                    combo = chk.controlling_combo_m or chk.controlling_combo_n
+                else:
+                    combo = chk.controlling_combo_n or chk.controlling_combo_m
+                return (sigma, f"\u03a3={sigma:.2f}", combo)
 
             def _dc_label(pt_a, pt_b, dc_key):
                 if dc_key not in self._dc_groups or self._dc_groups[dc_key] is None:
@@ -703,11 +715,14 @@ class FramePreview(tk.Canvas):
                 my = (pt_a[1] + pt_b[1]) / 2
                 if chk.status == "NO_DATA":
                     text = "n/d"
+                    color_util = 0.0
+                    color_status = "NO_DATA"
                 else:
-                    combo = _dominant_combo(chk)
-                    text = (f"{chk.util_combined:.2f}\n{combo}"
-                            if combo else f"{chk.util_combined:.2f}")
-                color = self._dc_color_for(chk.status, chk.util_combined)
+                    util, label, combo = _dominant(chk)
+                    text = f"{label}\n{combo}" if combo else label
+                    color_util = util
+                    color_status = chk.status
+                color = self._dc_color_for(color_status, color_util)
                 self._create_boxed_draggable_label(
                     mx, my, text, f"uls_{dc_key}",
                     fg=color, outline=color,

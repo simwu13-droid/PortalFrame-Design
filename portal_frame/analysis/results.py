@@ -82,8 +82,7 @@ class MemberDesignCheck:
     """AS/NZS 4600 member capacity check result for one member.
 
     Forces are envelope extremes from the ULS envelope curves; checks use
-    pre-computed φN_c / φM_bx from the Formsteel span table at the user-
-    supplied effective length.
+    pre-computed φN_c / φM_bx / φV_y from the Formsteel span table.
     """
     member_id: int
     member_role: str             # "col" | "raf"
@@ -92,15 +91,19 @@ class MemberDesignCheck:
     phi_Nc: float | None         # kN, None if no span table data
     phi_Nt: float                # kN, always computed (0.85 * Ag * fu)
     phi_Mbx: float | None        # kNm, None if no span table data
-    N_compression: float         # kN, abs of most -ve axial (>=0)
-    N_tension: float             # kN, most +ve axial (>=0)
-    M_max: float                 # kNm, max |moment|
-    util_axial: float            # max(N*c/φNc, N*t/φNt)
-    util_bending: float          # M*/φMbx
-    util_combined: float         # linear interaction
-    status: str                  # "PASS" | "FAIL" | "NO_DATA"
+    phi_Vy: float | None = None  # kN, None if no span table data
+    N_compression: float = 0.0   # kN, abs of most -ve axial (>=0)
+    N_tension: float = 0.0       # kN, most +ve axial (>=0)
+    M_max: float = 0.0           # kNm, max |moment|
+    V_max: float = 0.0           # kN, max |shear|
+    util_axial: float = 0.0      # max(N*c/φNc, N*t/φNt)
+    util_bending: float = 0.0    # M*/φMbx
+    util_shear: float = 0.0      # V*/φVy
+    util_combined: float = 0.0   # linear interaction (axial + bending)
+    status: str = "PASS"         # "PASS" | "FAIL" | "NO_DATA"
     controlling_combo_n: str = ""
     controlling_combo_m: str = ""
+    controlling_combo_v: str = ""
 
 
 @dataclass

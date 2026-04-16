@@ -1874,11 +1874,12 @@ class PortalFrameApp(tk.Tk):
                 groups[key] = chk
                 return
             # Worst (highest util) wins; NO_DATA is treated as -inf so any
-            # actual check supersedes it.
+            # actual check supersedes it. Use max of (combined, shear) so
+            # shear-dominated members can win their bucket.
             def rank(c):
                 if c.status == "NO_DATA":
                     return -1.0
-                return c.util_combined
+                return max(c.util_combined, c.util_shear)
             if rank(chk) > rank(existing):
                 groups[key] = chk
 
@@ -2030,6 +2031,7 @@ class PortalFrameApp(tk.Tk):
                         f"  L={chk.L_eff:.1f}m"
                         f"  N/\u03c6N={chk.util_axial:.2f}"
                         f"  M/\u03c6Mb={chk.util_bending:.2f}"
+                        f"  V/\u03c6V={chk.util_shear:.2f}"
                         f"  \u03a3={chk.util_combined:.2f}  {chk.status}"
                     )
                     if chk.status == "FAIL":

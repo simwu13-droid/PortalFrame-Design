@@ -64,9 +64,9 @@ portal_frame/
     tabs/            (empty — tabs currently built inline in app.py)
   cli.py           CLI entry point
   run_gui.py       GUI entry point
-tests/             206 unit tests (standards, models, output, crane, PyNite solver, CFS checks, serviceability)
+tests/             213 unit tests (standards, models, output, crane, PyNite solver, CFS checks incl. shear, serviceability)
 docs/
-  CFS_Span_Table.xlsx  Formsteel span table (P kN + Mx kNm sheets, 1m–25m columns)
+  CFS_Span_Table.xlsx  Formsteel span table (P kN, Mx kNm, Vy kN sheets; 1m–25m for P/Mx, no L for Vy)
 ```
 
 **Backward-compatible wrappers** (root level):
@@ -174,10 +174,10 @@ Forces split equally to eave nodes: F_node = V/2
 
 ## CFS Member Design Check (AS/NZS 4600)
 
-**Status: IMPLEMENTED** — ULS bending, axial, combined via Formsteel span table lookup. Shear deferred (table not yet provided).
+**Status: IMPLEMENTED** — ULS bending, axial, shear, combined via Formsteel span table lookup.
 
 ### Implementation
-- `standards/cfs_span_table.py`: loads `docs/CFS_Span_Table.xlsx`, provides `phi_Nc(library_name, L_m)` and `phi_Mbx(library_name, L_m)` with linear interpolation and endpoint clamping (1m–25m range)
+- `standards/cfs_span_table.py`: loads `docs/CFS_Span_Table.xlsx` (3 sheets: P kN, Mx kNm, Vy kN), provides `phi_Nc(library_name, L_m)`, `phi_Mbx(library_name, L_m)` (linear interpolation between integer-meter columns, clamped 1m–25m), and `phi_Vy(library_name)` (single value per section, no L dependence)
 - `standards/cfs_check.py`: `check_member()` (single member), `check_all_members()` (full topology), `phi_Nt()` (tension)
 - `analysis/results.py`: `MemberDesignCheck` dataclass on `AnalysisOutput.design_checks`
 - GUI: Frame tab inputs for `col_Le` and `raf_Le` (effective lengths), results panel shows per-member utilisation with FAIL/PASS/NO_DATA colouring, HUD `[ULS]` toggle button with colour-coded member overlay and draggable boxed midpoint labels showing `util\ncombo_name`
@@ -196,12 +196,13 @@ The 63020 family uses convention: N = nested base, S1/S2 = stiffener variant. Se
 Tension:    phi_Nt = 0.85 * kt * An * fu  (kt=1, An=Ag, fu=550 MPa for G550)
 Axial util: max(|N*c|/phi_Nc, N*t/phi_Nt)
 Bending:    M*/phi_Mbx
+Shear:      V*/phi_Vy
 Combined:   util_axial + util_bending <= 1.0  (simple linear interaction)
 ```
-PASS if combined <= 1.0, FAIL otherwise. Moment amplification (Cl 3.5.1 alpha_n) intentionally omitted — linear interaction is conservative.
+PASS if (combined <= 1.0) AND (shear <= 1.0). Shear is checked independently from combined — a member failing shear alone still triggers FAIL. Moment amplification (Cl 3.5.1 alpha_n) and combined moment+shear interaction (Cl 3.3.5) intentionally omitted — the current conservative separate checks are adequate for typical NZ portal frames.
 
 ### Canvas Overlay
-HUD `[ULS]` button toggles per-member colour overlay (green <= 0.85, amber <= 1.0, red > 1.0, grey = NO_DATA). Each member gets a draggable boxed label showing `util\nULS-X` where ULS-X is the dominant combo (moment combo when bending dominates, axial combo otherwise). Mutually exclusive with SLS overlay.
+HUD `[ULS]` button toggles per-member colour overlay (green <= 0.85, amber <= 1.0, red > 1.0, grey = NO_DATA). Member stroke colour reflects `max(util_combined, util_shear)` so shear-dominated failures show red. Each member gets a draggable boxed label showing `util\nULS-X` where the displayed util is whichever dominates (`Σ=...` when combined leads, `V/φV=...` when shear leads), and ULS-X is the corresponding controlling combo. Mutually exclusive with SLS overlay.
 
 ## Serviceability Checks (SLS)
 
@@ -252,7 +253,7 @@ Overlay state is single-slot (`_overlay_mode: "off" | "uls" | "sls"`), giving mu
 HUD buttons support optional tooltips (hover text drawn as canvas items, chained via `add="+"` on Enter/Leave handlers). All annotation labels (dimensions, ULS capacity, SLS badges) are draggable — offsets persist across redraws and overlay toggles.
 
 ## Testing
-- Unit tests: `python -m pytest tests/ -v` (206 tests covering standards, models, output, crane, PyNite solver, CFS checks, serviceability)
+- Unit tests: `python -m pytest tests/ -v` (213 tests covering standards, models, output, crane, PyNite solver, CFS checks incl. shear, serviceability)
 - GUI launch test: `python -m portal_frame.run_gui &`, wait a few seconds, then `tasklist | grep python`
 - SpaceGass output files must be opened in SpaceGass v14.25 to verify format correctness.
 - Output verification: generate with both old wrapper and new package, `diff` must show identical output.

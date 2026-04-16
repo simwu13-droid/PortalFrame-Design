@@ -54,6 +54,7 @@ if _BUNDLE_DIR:
 # Module-level caches (filled on first access)
 _NC_TABLE: dict[str, list[float]] | None = None
 _MBX_TABLE: dict[str, list[float]] | None = None
+_VY_TABLE: dict[str, float] | None = None  # section -> shear capacity (kN), no L dependence
 _TABLE_LENGTHS: list[float] = []
 
 
@@ -98,9 +99,25 @@ def _load_sheet(ws) -> tuple[list[float], dict[str, list[float]]]:
     return lengths, table
 
 
+def _load_vy_sheet(ws) -> dict[str, float]:
+    """Parse the single-value Vy sheet. Header row skipped; (section, value) pairs."""
+    out: dict[str, float] = {}
+    for i, row in enumerate(ws.iter_rows(values_only=True)):
+        if i == 0:
+            continue   # header
+        if not row or row[0] is None or row[1] is None:
+            continue
+        name = str(row[0]).strip()
+        try:
+            out[name] = float(row[1])
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def _ensure_loaded() -> None:
-    global _NC_TABLE, _MBX_TABLE, _TABLE_LENGTHS
-    if _NC_TABLE is not None and _MBX_TABLE is not None:
+    global _NC_TABLE, _MBX_TABLE, _VY_TABLE, _TABLE_LENGTHS
+    if _NC_TABLE is not None and _MBX_TABLE is not None and _VY_TABLE is not None:
         return
 
     path = _find_xlsx()
@@ -120,8 +137,14 @@ def _ensure_loaded() -> None:
             "P (kN) and Mx (kN-m) sheets have inconsistent length headers"
         )
 
+    # Shear sheet is optional — if absent, Vy lookups return None.
+    vy: dict[str, float] = {}
+    if "Vy (kN)" in wb.sheetnames:
+        vy = _load_vy_sheet(wb["Vy (kN)"])
+
     _NC_TABLE = nc
     _MBX_TABLE = mbx
+    _VY_TABLE = vy
     _TABLE_LENGTHS = nc_lengths
 
 
@@ -177,3 +200,17 @@ def phi_Mbx(library_name: str, L_m: float) -> float | None:
     if key not in _MBX_TABLE:
         return None
     return _interp(_TABLE_LENGTHS, _MBX_TABLE[key], L_m)
+
+
+def phi_Vy(library_name: str) -> float | None:
+    """Shear capacity φV_y (kN) for this section.
+
+    Shear does not depend on effective length — each section has a
+    single capacity value. Returns None if the section has no mapping
+    or the Vy sheet is missing.
+    """
+    if library_name not in LIBRARY_TO_SPANTABLE:
+        return None
+    _ensure_loaded()
+    key = LIBRARY_TO_SPANTABLE[library_name]
+    return _VY_TABLE.get(key)
