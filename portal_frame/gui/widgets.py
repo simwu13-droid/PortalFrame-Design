@@ -116,6 +116,9 @@ class LabeledCombo(tk.Frame):
         self.entry.bind("<Escape>",     self._on_escape)
         self.entry.bind("<FocusIn>",    self._on_focus_in)
         self.entry.bind("<FocusOut>",   self._on_focus_out)
+        self.entry.bind("<Tab>",           self._on_tab)
+        self.entry.bind("<Shift-Tab>",     self._on_tab)
+        self.entry.bind("<ISO_Left_Tab>",  self._on_tab)
 
     # --- Public API (unchanged signatures) -------------------------------
 
@@ -258,6 +261,19 @@ class LabeledCombo(tk.Frame):
         else:
             self.var.set(self._last_valid)
         self._hide_popup()
+
+    def _on_tab(self, ev):
+        """If the popup is open with a highlighted row, commit that row
+        before Tab advances focus to the next widget. Do NOT return
+        "break" — we want Tk's default Tab binding (focus traversal) to
+        still run after we commit.
+        """
+        if self._popup_visible() and self._listbox is not None:
+            cur = self._listbox.curselection()
+            if cur:
+                self._commit(self._listbox.get(cur[0]))
+                self._hide_popup()
+        return None
 
     def _on_key_release(self, ev):
         # Ignore nav/commit/modifier keys — their own handlers cover them.
