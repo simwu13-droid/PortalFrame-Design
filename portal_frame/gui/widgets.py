@@ -111,3 +111,66 @@ class LabeledCombo(tk.Frame):
 
     def bind_change(self, callback):
         self._change_callback = callback
+
+    # --- Internal event handlers ---------------------------------------
+
+    def _on_key_release(self, ev):
+        """Filter master list by substring of current entry text."""
+        if ev.keysym in self._NAV_KEYSYMS:
+            return
+        if self._filtering:
+            return
+        self._filtering = True
+        try:
+            filtered = _filter_substring(self._all_values, self.var.get())
+            self.combo["values"] = filtered
+            # Re-open the popdown so the narrowed list is visible.
+            if filtered:
+                self.combo.event_generate("<Down>")
+        finally:
+            self._filtering = False
+
+    def _on_return(self, ev):
+        """Commit on Enter: exact match > unique filter match > no-op."""
+        text = self.var.get()
+        if text in self._all_values:
+            self._commit(text)
+            return "break"
+        filtered = _filter_substring(self._all_values, text)
+        if len(filtered) == 1:
+            self._commit(filtered[0])
+            return "break"
+        # Otherwise let Tk's default Enter behaviour run (highlighted row
+        # in popdown will fire <<ComboboxSelected>>, which commits).
+        return None
+
+    def _on_escape(self, ev):
+        """Revert entry text to last-committed value."""
+        self.var.set(self._last_valid)
+        self.combo["values"] = self._all_values
+        # Close the popdown if it is open.
+        try:
+            self.combo.tk.call("ttk::combobox::Unpost", self.combo._w)
+        except tk.TclError:
+            pass
+        return "break"
+
+    def _on_focus_out(self, ev):
+        """If typed text is not valid, revert."""
+        text = self.var.get()
+        if text not in self._all_values:
+            self.var.set(self._last_valid)
+        self.combo["values"] = self._all_values
+
+    def _on_selected(self, ev):
+        """List-item click or default Enter-on-highlighted-row commit."""
+        self._commit(self.var.get())
+
+    def _commit(self, value: str) -> None:
+        """Update _last_valid and fire the change callback if the value changed."""
+        changed = value != self._last_valid
+        self.var.set(value)
+        self._last_valid = value
+        self.combo["values"] = self._all_values
+        if changed and self._change_callback is not None:
+            self._change_callback()
