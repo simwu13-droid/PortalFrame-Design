@@ -6,6 +6,17 @@ from tkinter import ttk
 from portal_frame.gui.theme import COLORS, FONT, FONT_BOLD, FONT_SMALL, FONT_MONO
 
 
+def _filter_substring(master: list[str], text: str) -> list[str]:
+    """Case-insensitive substring filter. Preserves master order.
+
+    Empty/whitespace-only text returns the full list.
+    """
+    needle = text.strip().lower()
+    if not needle:
+        return list(master)
+    return [item for item in master if needle in item.lower()]
+
+
 class LabeledEntry(tk.Frame):
     """A label + entry pair with units."""
 
