@@ -54,7 +54,20 @@ class LabeledEntry(tk.Frame):
 
 
 class LabeledCombo(tk.Frame):
-    """A label + combobox pair."""
+    """A label + combobox pair with type-to-filter support.
+
+    Typing filters the dropdown by case-insensitive substring. Commits
+    only happen on list-item click, Enter (when filter is unique or a
+    row is highlighted), or programmatic set(). Invalid typed text
+    reverts on Escape or focus-out. Public API unchanged.
+    """
+
+    _NAV_KEYSYMS = {
+        "Up", "Down", "Left", "Right", "Home", "End", "Prior", "Next",
+        "Tab", "ISO_Left_Tab",
+        "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R",
+        "Caps_Lock", "Return", "Escape",
+    }
 
     def __init__(self, parent, label, values=None, default="", width=20):
         super().__init__(parent, bg=COLORS["bg_panel"])
@@ -63,19 +76,38 @@ class LabeledCombo(tk.Frame):
         tk.Label(self, text=label, font=FONT, fg=COLORS["fg"], bg=COLORS["bg_panel"],
                  anchor="w").grid(row=0, column=0, sticky="w", padx=(0, 6))
 
+        self._all_values: list[str] = list(values or [])
+        self._last_valid: str = default if default in self._all_values else ""
+        self._filtering: bool = False
+        self._change_callback = None
+
         self.var = tk.StringVar(value=default)
-        self.combo = ttk.Combobox(self, textvariable=self.var, values=values or [],
-                                  width=width, state="readonly", font=FONT_MONO)
+        self.combo = ttk.Combobox(self, textvariable=self.var, values=self._all_values,
+                                  width=width, state="normal", font=FONT_MONO)
         self.combo.grid(row=0, column=1, sticky="ew", padx=2)
+
+        self.combo.bind("<KeyRelease>", self._on_key_release)
+        self.combo.bind("<Return>", self._on_return)
+        self.combo.bind("<Escape>", self._on_escape)
+        self.combo.bind("<FocusOut>", self._on_focus_out)
+        self.combo.bind("<<ComboboxSelected>>", self._on_selected)
+
+    # Public API — signatures unchanged.
 
     def get(self) -> str:
         return self.var.get()
 
     def set(self, value):
         self.var.set(value)
+        if value in self._all_values:
+            self._last_valid = value
 
     def set_values(self, values):
-        self.combo["values"] = values
+        self._all_values = list(values)
+        self.combo["values"] = self._all_values
+        if self.var.get() not in self._all_values:
+            self.var.set("")
+            self._last_valid = ""
 
     def bind_change(self, callback):
-        self.combo.bind("<<ComboboxSelected>>", lambda _: callback())
+        self._change_callback = callback
