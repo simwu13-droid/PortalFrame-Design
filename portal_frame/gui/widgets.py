@@ -79,6 +79,7 @@ class LabeledCombo(tk.Frame):
         self._all_values: list[str] = list(values or [])
         self._last_valid: str = default if default in self._all_values else ""
         self._filtering: bool = False
+        self._popdown_opening: bool = False
         self._change_callback = None
 
         self.var = tk.StringVar(value=default)
@@ -116,13 +117,20 @@ class LabeledCombo(tk.Frame):
     # --- Internal event handlers ---------------------------------------
 
     def _on_focus_in(self, ev):
-        """Select all entry text so typing replaces the current value."""
+        """Select all entry text so typing replaces the current value.
+
+        Skips the select-all when focus is returning from our own popdown
+        (detected via _popdown_opening) — otherwise mid-typing focus bounces
+        would clobber the text the user just typed.
+        """
+        if self._popdown_opening:
+            return
         self.combo.select_range(0, "end")
         self.combo.icursor("end")
 
     def _on_key_release(self, ev):
-        """Filter master list by substring of current entry text. Popdown is NOT
-        auto-opened — user opens it manually via arrow button or Down key.
+        """Filter master list by substring of current entry text. Post the
+        popdown so user sees matches, then reclaim focus to the entry.
         """
         if ev.keysym in self._NAV_KEYSYMS:
             return
@@ -132,8 +140,19 @@ class LabeledCombo(tk.Frame):
         try:
             filtered = _filter_substring(self._all_values, self.var.get())
             self.combo["values"] = filtered
+            if filtered:
+                self._popdown_opening = True
+                try:
+                    self.combo.event_generate("<Down>")
+                    self.combo.focus_set()
+                    self.combo.icursor("end")
+                finally:
+                    self.after_idle(self._clear_popdown_flag)
         finally:
             self._filtering = False
+
+    def _clear_popdown_flag(self):
+        self._popdown_opening = False
 
     def _on_return(self, ev):
         """Commit on Enter: exact match > unique filter match > no-op."""
@@ -161,7 +180,14 @@ class LabeledCombo(tk.Frame):
         return "break"
 
     def _on_focus_out(self, ev):
-        """If typed text is not valid, revert; if valid and uncommitted, commit."""
+        """If typed text is not valid, revert; if valid and uncommitted, commit.
+
+        Ignored during our own popdown-opening moment — _<Down>_ transiently
+        moves focus to the popdown listbox, and that must not be treated as
+        a user-driven focus leave.
+        """
+        if self._popdown_opening:
+            return
         text = self.var.get()
         if text in self._all_values:
             if text != self._last_valid:
