@@ -66,6 +66,13 @@ class FramePreview(tk.Canvas):
         self._drag_offset = (0, 0)
         # User-adjusted label offsets: key -> (dx, dy) from original position
         self._label_offsets = {}
+        # Label partners: text item id -> [companion canvas items] that
+        # should move in lockstep when the text is dragged (e.g. the
+        # background rect on ULS capacity labels and the SLS apex badge).
+        self._label_partners: dict[int, list[int]] = {}
+
+        # Dimension annotations visibility (toggled from HUD)
+        self._show_dimensions: bool = True
 
         # ── View state (explicit, replaces auto-fit closure) ──
         self._view_cx = 0.0       # World X at canvas center
@@ -85,6 +92,17 @@ class FramePreview(tk.Canvas):
         # Pan state
         self._pan_start = None
 
+        # Design check overlay state
+        # _dc_groups: {"col_L": MemberDesignCheck | None, "col_R": ..., ...}
+        # set via set_design_checks() from app.py
+        self._dc_groups: dict[str, object] = {}
+        # SLS check list (wind/eq rows). Set via set_sls_checks().
+        self._sls_checks: list = []
+        # Overlay mode is single-slot: "off" | "uls" | "sls". Changing one
+        # mode automatically clears the other — mutual exclusion comes
+        # free from the single-slot state.
+        self._overlay_mode: str = "off"
+
         # ── Event bindings for pan/zoom/keyboard ──
         self.bind("<ButtonPress-2>", self._on_pan_start)
         self.bind("<B2-Motion>", self._on_pan_move)
@@ -98,6 +116,83 @@ class FramePreview(tk.Canvas):
     def _on_resize(self, *_):
         if self._geom:
             self.update_frame(self._geom, self._supports, self._loads, self._diagram)
+
+    def set_design_checks(self, groups: dict | None) -> None:
+        """Receive bucketed ULS design-check results from app.py.
+
+        groups keys: "col_L", "col_R", "raf_L", "raf_R" (mono uses "raf_L"
+        for the single rafter line and omits "raf_R"). Values are the
+        worst-utilisation MemberDesignCheck for each canvas line, or None
+        if no check is available.
+
+        Pass None to clear.
+        """
+        self._dc_groups = groups or {}
+
+    def set_sls_checks(self, checks: list | None) -> None:
+        """Receive SLS apex deflection checks from app.py. Pass None to clear."""
+        self._sls_checks = checks or []
+
+    def toggle_uls_overlay(self) -> None:
+        """Toggle the ULS member capacity overlay. Mutually exclusive with SLS."""
+        self._overlay_mode = "off" if self._overlay_mode == "uls" else "uls"
+        if self._geom:
+            self.update_frame(self._geom, self._supports, self._loads, self._diagram)
+
+    def toggle_sls_overlay(self) -> None:
+        """Toggle the SLS apex deflection overlay. Mutually exclusive with ULS."""
+        self._overlay_mode = "off" if self._overlay_mode == "sls" else "sls"
+        if self._geom:
+            self.update_frame(self._geom, self._supports, self._loads, self._diagram)
+
+    def toggle_dimensions(self) -> None:
+        """Toggle the dimension annotations (span, eave, ridge, pitches)."""
+        self._show_dimensions = not self._show_dimensions
+        if self._geom:
+            self.update_frame(self._geom, self._supports, self._loads, self._diagram)
+
+    def _dc_color_for(self, status: str, util: float) -> str:
+        """Return overlay colour for a member based on status + util."""
+        if status == "NO_DATA":
+            return COLORS["dc_nodata"]
+        if util > 1.0:
+            return COLORS["dc_fail"]
+        if util > 0.85:
+            return COLORS["dc_warn"]
+        return COLORS["dc_pass"]
+
+    def _sls_worst_util(self) -> tuple[float, str]:
+        """Return (worst_util, worst_status) across both SLS categories.
+
+        When no checks exist, returns (0.0, 'NO_DATA') so callers treat it
+        as uninitialised/grey.
+        """
+        if not self._sls_checks:
+            return 0.0, "NO_DATA"
+        worst = max(self._sls_checks, key=lambda c: c.util)
+        return worst.util, worst.status
+
+    # ── Tooltip helpers ──
+
+    def _show_tooltip(self, event, text: str) -> None:
+        """Draw a tooltip near the mouse cursor. Cleaned up on leave/redraw."""
+        self._hide_tooltip()
+        pad = 6
+        tid = self.create_text(
+            event.x + 12, event.y + 18,
+            text=text, fill=COLORS["fg_bright"],
+            font=FONT_SMALL, anchor="nw", tags=("hud_tooltip",))
+        bb = self.bbox(tid)
+        if bb:
+            self.create_rectangle(
+                bb[0] - pad, bb[1] - pad / 2,
+                bb[2] + pad, bb[3] + pad / 2,
+                fill=COLORS["hud_bg"], outline=COLORS["border"], width=1,
+                tags=("hud_tooltip",))
+            self.tag_raise(tid)
+
+    def _hide_tooltip(self) -> None:
+        self.delete("hud_tooltip")
 
     def tx(self, x, y):
         """World coordinates -> screen coordinates using explicit view state."""
@@ -279,7 +374,15 @@ class FramePreview(tk.Canvas):
         # Clamp within canvas
         nx = max(5, min(event.x - self._drag_offset[0], w - 5))
         ny = max(5, min(event.y - self._drag_offset[1], h - 5))
+        # Compute delta from the current position so partners move by the
+        # same amount (can't just set their coords — they may be rects
+        # with 4-tuple geometry rather than 2-tuple like text items).
+        old_x, old_y = self.coords(self._drag_item)
         self.coords(self._drag_item, nx, ny)
+        dx = nx - old_x
+        dy = ny - old_y
+        for partner in self._label_partners.get(self._drag_item, ()):
+            self.move(partner, dx, dy)
 
     def _drag_end(self, event):
         if self._drag_item is None:
@@ -292,7 +395,8 @@ class FramePreview(tk.Canvas):
             self._label_offsets[key] = (cx - ox, cy - oy)
         self._drag_item = None
 
-    def _create_label(self, x, y, text, label_key, fill=None, font=None, anchor="center"):
+    def _create_label(self, x, y, text, label_key, fill=None, font=None,
+                      anchor="center", justify="center"):
         """Create a text label that is draggable and tracked for collision."""
         if fill is None:
             fill = COLORS["fg_dim"]
@@ -310,13 +414,69 @@ class FramePreview(tk.Canvas):
         fy = max(8, min(fy, h - 8))
 
         item = self.create_text(fx, fy, text=text, fill=fill, font=font,
-                                anchor=anchor, tags=("label",))
+                                anchor=anchor, justify=justify, tags=("label",))
         self._make_draggable(item, label_key)
         # Store original (un-offset) position for drag delta calculation
         self._label_positions[label_key] = (x, y)
         self._label_items.append(item)
         self._item_to_key[item] = label_key
         return item
+
+    def _create_boxed_draggable_label(
+        self, x: float, y: float, text: str, label_key: str,
+        fg: str, outline: str | None = None,
+        bg: str | None = None, anchor: str = "center",
+        bbox_pad: int = 3,
+    ) -> int:
+        """Create a text label with a background rect that drags as a unit.
+
+        Uses the existing `_create_label` infrastructure for the text item
+        (so offsets persist across redraws), then draws a background rect
+        around the final text position and registers the rect as a
+        "partner" of the text so dragging either piece moves both.
+
+        Also binds drag handlers on the rect so clicking the rect
+        initiates a drag of the text (with the partner following).
+
+        Returns the text item id.
+        """
+        if outline is None:
+            outline = fg
+        if bg is None:
+            bg = COLORS["canvas_bg"]
+
+        text_id = self._create_label(
+            x, y, text, label_key, fill=fg, anchor=anchor)
+
+        # bbox() needs the item to be laid out — update_idletasks not
+        # required since create_text is immediate, but bbox may be None
+        # for very early draws with unmapped canvases. Guard for safety.
+        bb = self.bbox(text_id)
+        if bb is None:
+            return text_id
+        rect_id = self.create_rectangle(
+            bb[0] - bbox_pad, bb[1] - bbox_pad,
+            bb[2] + bbox_pad, bb[3] + bbox_pad,
+            fill=bg, outline=outline, width=1,
+            tags=("label", "label_bg"),
+        )
+        # Text must stay above its own background rect. Raise the text
+        # explicitly after creating the rect (the rect was just drawn
+        # so it's currently on top by default).
+        self.tag_raise(text_id)
+
+        # Register rect as a partner that moves with the text.
+        self._label_partners.setdefault(text_id, []).append(rect_id)
+
+        # Clicking the rect border should also start a drag of the text.
+        self.tag_bind(rect_id, "<ButtonPress-1>",
+            lambda e, tid=text_id, key=label_key: self._drag_start(e, tid, key))
+        self.tag_bind(rect_id, "<B1-Motion>", self._drag_move)
+        self.tag_bind(rect_id, "<ButtonRelease-1>", self._drag_end)
+        self.tag_bind(rect_id, "<Enter>", lambda e: self.config(cursor="fleur"))
+        self.tag_bind(rect_id, "<Leave>", lambda e: self.config(cursor=""))
+
+        return text_id
 
     def _resolve_overlaps(self):
         """Nudge auto-placed labels that overlap. User-dragged labels are not moved."""
@@ -402,10 +562,15 @@ class FramePreview(tk.Canvas):
         self._supports = supports
         self._loads = loads
         self._diagram = diagram
+        # Explicit tooltip cleanup before the global delete("all") — makes
+        # intent clear and avoids surprising future readers who don't
+        # realise delete("all") also clears tagged canvas items.
+        self._hide_tooltip()
         self.delete("all")
         self._label_items = []
         self._label_positions = {}
         self._item_to_key = {}
+        self._label_partners = {}
 
         w = self.winfo_width()
         h = self.winfo_height()
@@ -482,15 +647,146 @@ class FramePreview(tk.Canvas):
         raf_color = COLORS["frame_raf_dim"] if is_deflection else COLORS["frame_raf"]
         member_width = 1 if is_deflection else 3
 
+        # Overlay state — single-slot, mutually exclusive.
+        uls_on = self._overlay_mode == "uls" and bool(self._dc_groups)
+        sls_on = self._overlay_mode == "sls" and bool(self._sls_checks)
+
+        sls_color = None
+        if sls_on:
+            worst_util, worst_status = self._sls_worst_util()
+            sls_color = self._dc_color_for(worst_status, worst_util)
+
+        def _line(pt_a, pt_b, base_color, role, dc_key):
+            if uls_on and dc_key in self._dc_groups and self._dc_groups[dc_key] is not None:
+                chk = self._dc_groups[dc_key]
+                color = self._dc_color_for(chk.status, chk.util_combined)
+                width = 4
+            elif sls_on and role == "raf":
+                color = sls_color
+                width = 4
+            else:
+                color = base_color
+                width = member_width
+            self.create_line(*pt_a, *pt_b, fill=color, width=width)
+
         if roof_type == "mono":
-            self.create_line(*ns[1], *ns[2], fill=col_color, width=member_width)
-            self.create_line(*ns[2], *ns[3], fill=raf_color, width=member_width)
-            self.create_line(*ns[3], *ns[4], fill=col_color, width=member_width)
+            _line(ns[1], ns[2], col_color, "col", "col_L")
+            _line(ns[2], ns[3], raf_color, "raf", "raf_L")
+            _line(ns[3], ns[4], col_color, "col", "col_R")
         else:
-            self.create_line(*ns[1], *ns[2], fill=col_color, width=member_width)
-            self.create_line(*ns[5], *ns[4], fill=col_color, width=member_width)
-            self.create_line(*ns[2], *ns[3], fill=raf_color, width=member_width)
-            self.create_line(*ns[3], *ns[4], fill=raf_color, width=member_width)
+            _line(ns[1], ns[2], col_color, "col", "col_L")
+            _line(ns[5], ns[4], col_color, "col", "col_R")
+            _line(ns[2], ns[3], raf_color, "raf", "raf_L")
+            _line(ns[3], ns[4], raf_color, "raf", "raf_R")
+
+        # ULS midpoint utilisation labels — two lines: util ratio on top,
+        # dominant combo name on the bottom so the user can see which
+        # load case is driving the critical capacity check. Each label
+        # is draggable (text + background rect move together).
+        if uls_on:
+            def _dominant_combo(chk) -> str:
+                """Pick which controlling combo to surface.
+
+                If bending dominates, show the moment-controlling combo;
+                otherwise the axial-controlling combo. Falls back to
+                whichever is non-empty.
+                """
+                if chk.util_bending >= chk.util_axial:
+                    return chk.controlling_combo_m or chk.controlling_combo_n
+                return chk.controlling_combo_n or chk.controlling_combo_m
+
+            def _dc_label(pt_a, pt_b, dc_key):
+                if dc_key not in self._dc_groups or self._dc_groups[dc_key] is None:
+                    return
+                chk = self._dc_groups[dc_key]
+                mx = (pt_a[0] + pt_b[0]) / 2
+                my = (pt_a[1] + pt_b[1]) / 2
+                if chk.status == "NO_DATA":
+                    text = "n/d"
+                else:
+                    combo = _dominant_combo(chk)
+                    text = (f"{chk.util_combined:.2f}\n{combo}"
+                            if combo else f"{chk.util_combined:.2f}")
+                color = self._dc_color_for(chk.status, chk.util_combined)
+                self._create_boxed_draggable_label(
+                    mx, my, text, f"uls_{dc_key}",
+                    fg=color, outline=color,
+                    anchor="center", bbox_pad=3)
+
+            if roof_type == "mono":
+                _dc_label(ns[1], ns[2], "col_L")
+                _dc_label(ns[2], ns[3], "raf_L")
+                _dc_label(ns[3], ns[4], "col_R")
+            else:
+                _dc_label(ns[1], ns[2], "col_L")
+                _dc_label(ns[5], ns[4], "col_R")
+                _dc_label(ns[2], ns[3], "raf_L")
+                _dc_label(ns[3], ns[4], "raf_R")
+
+        # SLS badges — one per metric (apex_dy, drift). Each badge shows
+        # EVERY category for that metric (so the user sees both wind and
+        # eq numbers, not just the one with the highest utilisation).
+        # Colour is driven by the worst util across categories. Each
+        # row shows the ACTUAL L/X or h/X deformation ratio the frame
+        # reached (not the design limit — that's in the results panel).
+        if sls_on and self._sls_checks:
+            def _format_metric_badge(checks: list) -> str:
+                """Build a multi-line badge text with one row per category.
+
+                Rows are ordered wind-first-then-eq for consistency.
+                Each row: '  CAT  δ=+X mm / L/Y  COMBO'
+                """
+                order = {"wind": 0, "eq": 1}
+                rows_sorted = sorted(checks, key=lambda c: order.get(c.category, 2))
+                lines = []
+                for c in rows_sorted:
+                    combo = f" {c.controlling_combo}" if c.controlling_combo else ""
+                    lines.append(
+                        f"{c.category.upper():4s} "
+                        f"\u03b4={c.deflection_mm:>6.1f}mm / "
+                        f"{c.reference_symbol}/{c.actual_ratio}"
+                        f"{combo}"
+                    )
+                return "\n".join(lines)
+
+            apex_checks = [c for c in self._sls_checks if c.metric == "apex_dy"]
+            drift_checks = [c for c in self._sls_checks if c.metric == "drift"]
+
+            # Apex badge at the ridge node
+            if apex_checks:
+                worst_apex = max(apex_checks, key=lambda c: c.util)
+                apex_node_id = 3   # node 3 = apex/ridge for gable and mono
+                if apex_node_id in ns:
+                    ax, ay = ns[apex_node_id]
+                    color = self._dc_color_for(worst_apex.status, worst_apex.util)
+                    # Mono puts the ridge at the top-right column — offset
+                    # the badge left/up so it clears the a1 pitch label.
+                    if roof_type == "mono":
+                        bx, by, banchor = ax - 20, ay - 28, "se"
+                    else:
+                        bx, by, banchor = ax, ay - 20, "s"
+                    self._create_boxed_draggable_label(
+                        bx, by, _format_metric_badge(apex_checks),
+                        "sls_apex_badge",
+                        fg=color, outline=color,
+                        anchor=banchor, bbox_pad=4)
+
+            # Drift badge next to the eave with the larger worst-case |dx|.
+            if drift_checks:
+                worst_drift = max(drift_checks, key=lambda c: c.util)
+                eave_left = ns.get(2)
+                eave_right = ns.get(4) if roof_type != "mono" else ns.get(3)
+                if eave_left and eave_right:
+                    if worst_drift.deflection_mm >= 0:
+                        bx, by, banchor = (eave_right[0] + 15, eave_right[1] - 8, "w")
+                    else:
+                        bx, by, banchor = (eave_left[0] - 15, eave_left[1] - 8, "e")
+                    color = self._dc_color_for(worst_drift.status, worst_drift.util)
+                    self._create_boxed_draggable_label(
+                        bx, by, _format_metric_badge(drift_checks),
+                        "sls_drift_badge",
+                        fg=color, outline=color,
+                        anchor=banchor, bbox_pad=4)
 
         # Crane bracket nodes (if crane_rail_height is set)
         crane_h = geom.get("crane_rail_height")
@@ -552,63 +848,66 @@ class FramePreview(tk.Canvas):
             self._draw_loads(loads, ns, self._view_zoom)
 
         # ── Dimension annotations (all as draggable labels) ──
-        dim_col = COLORS["fg_dim"]
+        # Toggled via the HUD DIM button — hides arrows, dimension
+        # labels, and pitch annotations as a group.
+        if self._show_dimensions:
+            dim_col = COLORS["fg_dim"]
 
-        # Span
-        left_base_sx = ns[base_node_ids[0]][0] if base_node_ids else self.tx(0, 0)[0]
-        right_base_sx = ns[base_node_ids[-1]][0] if len(base_node_ids) >= 2 else self.tx(span, 0)[0]
-        dim_y = min(ground_sy + 28, h - 20)
-        self.create_line(left_base_sx, dim_y, right_base_sx, dim_y,
-                         fill=dim_col, width=1, arrow="both")
-        self._create_label(
-            (left_base_sx + right_base_sx) / 2, dim_y + 12,
-            f"{span:.1f} m", "dim_span", fill=dim_col)
-
-        # Eave height
-        dx = max(40, ns[1][0] - 30)
-        self.create_line(dx, ns[1][1], dx, ns[2][1], fill=dim_col, width=1, arrow="both")
-        self._create_label(
-            dx - 8, (ns[1][1] + ns[2][1]) / 2,
-            f"{eave:.1f} m", "dim_eave", fill=dim_col, anchor="e")
-
-        if roof_type == "gable":
-            # Ridge height
-            dx2 = ns[3][0] + 20
-            self.create_line(dx2, ground_sy, dx2, ns[3][1], fill=dim_col, width=1, arrow="both")
-            self._create_label(
-                dx2 + 8, (ground_sy + ns[3][1]) / 2,
-                f"{ridge:.2f} m", "dim_ridge", fill=dim_col, anchor="w")
-
-            # Apex horizontal distance
-            apex_dim_y = ns[2][1] - 15
-            self.create_line(ns[2][0], apex_dim_y, ns[3][0], apex_dim_y,
+            # Span
+            left_base_sx = ns[base_node_ids[0]][0] if base_node_ids else self.tx(0, 0)[0]
+            right_base_sx = ns[base_node_ids[-1]][0] if len(base_node_ids) >= 2 else self.tx(span, 0)[0]
+            dim_y = min(ground_sy + 28, h - 20)
+            self.create_line(left_base_sx, dim_y, right_base_sx, dim_y,
                              fill=dim_col, width=1, arrow="both")
             self._create_label(
-                (ns[2][0] + ns[3][0]) / 2, apex_dim_y - 10,
-                f"{apex_x:.2f} m", "dim_apex_x", fill=dim_col)
+                (left_base_sx + right_base_sx) / 2, dim_y + 12,
+                f"{span:.1f} m", "dim_span", fill=dim_col)
 
-            # Left rafter pitch
-            mx = (ns[2][0] + ns[3][0]) / 2
-            my = (ns[2][1] + ns[3][1]) / 2
+            # Eave height
+            dx = max(40, ns[1][0] - 30)
+            self.create_line(dx, ns[1][1], dx, ns[2][1], fill=dim_col, width=1, arrow="both")
             self._create_label(
-                mx, my - 15,
-                f"a1={pitch:.1f}", "pitch_left",
-                fill=COLORS["frame_raf"], anchor="s")
+                dx - 8, (ns[1][1] + ns[2][1]) / 2,
+                f"{eave:.1f} m", "dim_eave", fill=dim_col, anchor="e")
 
-            # Right rafter pitch
-            mx2 = (ns[3][0] + ns[4][0]) / 2
-            my2 = (ns[3][1] + ns[4][1]) / 2
-            self._create_label(
-                mx2, my2 - 15,
-                f"a2={pitch2:.1f}", "pitch_right",
-                fill=COLORS["frame_raf"], anchor="s")
-        else:
-            mx = (ns[2][0] + ns[3][0]) / 2
-            my = (ns[2][1] + ns[3][1]) / 2
-            self._create_label(
-                mx, my - 15,
-                f"{pitch:.1f} deg", "pitch_mono",
-                fill=COLORS["frame_raf"], anchor="s")
+            if roof_type == "gable":
+                # Ridge height
+                dx2 = ns[3][0] + 20
+                self.create_line(dx2, ground_sy, dx2, ns[3][1], fill=dim_col, width=1, arrow="both")
+                self._create_label(
+                    dx2 + 8, (ground_sy + ns[3][1]) / 2,
+                    f"{ridge:.2f} m", "dim_ridge", fill=dim_col, anchor="w")
+
+                # Apex horizontal distance
+                apex_dim_y = ns[2][1] - 15
+                self.create_line(ns[2][0], apex_dim_y, ns[3][0], apex_dim_y,
+                                 fill=dim_col, width=1, arrow="both")
+                self._create_label(
+                    (ns[2][0] + ns[3][0]) / 2, apex_dim_y - 10,
+                    f"{apex_x:.2f} m", "dim_apex_x", fill=dim_col)
+
+                # Left rafter pitch
+                mx = (ns[2][0] + ns[3][0]) / 2
+                my = (ns[2][1] + ns[3][1]) / 2
+                self._create_label(
+                    mx, my - 15,
+                    f"a1={pitch:.1f}", "pitch_left",
+                    fill=COLORS["frame_raf"], anchor="s")
+
+                # Right rafter pitch
+                mx2 = (ns[3][0] + ns[4][0]) / 2
+                my2 = (ns[3][1] + ns[4][1]) / 2
+                self._create_label(
+                    mx2, my2 - 15,
+                    f"a2={pitch2:.1f}", "pitch_right",
+                    fill=COLORS["frame_raf"], anchor="s")
+            else:
+                mx = (ns[2][0] + ns[3][0]) / 2
+                my = (ns[2][1] + ns[3][1]) / 2
+                self._create_label(
+                    mx, my - 15,
+                    f"{pitch:.1f} deg", "pitch_mono",
+                    fill=COLORS["frame_raf"], anchor="s")
 
         # Legend
         ly = 15
@@ -639,10 +938,13 @@ class FramePreview(tk.Canvas):
             self.create_text(lx + 25, ly, text=label_map.get(dtype, dtype),
                              fill=COLORS["fg_dim"], font=FONT_SMALL, anchor="w")
 
-        # Prune stale drag offsets for labels no longer present
-        stale = [k for k in self._label_offsets if k not in self._label_positions]
-        for k in stale:
-            del self._label_offsets[k]
+        # Drag offsets are intentionally NOT pruned here. Keeping the
+        # offset for keys that aren't in the current redraw lets overlays
+        # (ULS, SLS) and dimensions preserve user-set positions across
+        # toggle cycles, and roof-type-specific labels (pitch_right,
+        # dim_ridge, ...) keep their positions when the user switches
+        # back to the matching roof type. The dict only grows with
+        # active user drags, so there's no unbounded accumulation.
 
         # Resolve label overlaps
         self._resolve_overlaps()
@@ -693,8 +995,13 @@ class FramePreview(tk.Canvas):
         fg = COLORS["fg_dim"]
         fg_hover = COLORS["fg_bright"]
 
-        def draw_button(cx, top_y, text, click_handler, text_color=None):
-            """Draw a rect+text button centered at cx. Returns (x1, x2)."""
+        def draw_button(cx, top_y, text, click_handler, text_color=None, tooltip=None):
+            """Draw a rect+text button centered at cx. Returns (x1, x2).
+
+            `tooltip`, when set, renders a small label near the cursor on
+            hover. The extra <Enter>/<Leave> bindings use add="+" to chain
+            onto the existing fill/colour hover handlers.
+            """
             if text_color is None:
                 text_color = fg
             text_w = len(text) * 7 + 2 * btn_pad_x
@@ -721,6 +1028,13 @@ class FramePreview(tk.Canvas):
                         self.config(cursor="")))
                 self.tag_bind(item, "<ButtonRelease-1>",
                     lambda e, h=click_handler: h())
+                if tooltip:
+                    self.tag_bind(item, "<Enter>",
+                        lambda e, msg=tooltip: self._show_tooltip(e, msg),
+                        add="+")
+                    self.tag_bind(item, "<Leave>",
+                        lambda e: self._hide_tooltip(),
+                        add="+")
 
             return x1, x2
 
@@ -770,7 +1084,31 @@ class FramePreview(tk.Canvas):
             if self._geom:
                 self.update_frame(self._geom, self._supports,
                                   self._loads, self._diagram)
-        draw_button(norm_cx, top_y, "Normalize", on_normalize)
+        x1_norm, _ = draw_button(norm_cx, top_y, "Normalize", on_normalize)
+
+        # [ULS] toggle button — member capacity check overlay
+        uls_cx = x1_norm - gap - 16
+        uls_color = COLORS["dc_pass"] if self._overlay_mode == "uls" else fg
+        x1_uls, _ = draw_button(
+            uls_cx, top_y, "ULS", self.toggle_uls_overlay,
+            text_color=uls_color,
+            tooltip="Enable Member Capacity Check (ULS) — bending, axial, combined per AS/NZS 4600")
+
+        # [SLS] toggle button — serviceability overlay (left of ULS)
+        sls_cx = x1_uls - gap - 16
+        sls_color = COLORS["dc_pass"] if self._overlay_mode == "sls" else fg
+        x1_sls, _ = draw_button(
+            sls_cx, top_y, "SLS", self.toggle_sls_overlay,
+            text_color=sls_color,
+            tooltip="Enable Serviceability Check (SLS) — apex deflection vs span/X limit")
+
+        # [DIM] toggle button — dimension annotations (left of SLS)
+        dim_cx = x1_sls - gap - 16
+        dim_color = COLORS["fg_bright"] if self._show_dimensions else fg
+        draw_button(
+            dim_cx, top_y, "DIM", self.toggle_dimensions,
+            text_color=dim_color,
+            tooltip="Toggle dimensions (span, eave, ridge, pitches)")
 
     # ── Force diagram drawing ──
 

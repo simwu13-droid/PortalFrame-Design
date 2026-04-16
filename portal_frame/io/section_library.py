@@ -21,8 +21,6 @@ LIBRARY_SEARCH_PATHS = [
 # Known library files — custom first, then standard NZ cold-formed
 SECTION_LIBRARY_FILES = [
     "LIBRARY_SG14_SECTION_FS.slsc",   # Formsteel custom
-    "LIBRARY_SECTION_NZCold.sls",      # Standard NZ cold-formed
-    "LIBRARY_SECTION_AustCold.sls",    # Standard AU cold-formed
 ]
 
 

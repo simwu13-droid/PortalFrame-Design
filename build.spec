@@ -11,6 +11,11 @@ datas = []
 if os.path.isfile(library_src):
     datas.append((library_src, "libraries"))
 
+# Bundle the CFS span table (used by the design check module)
+span_table_src = os.path.join(os.path.dirname(os.path.abspath(SPEC)), "docs", "CFS_Span_Table.xlsx")
+if os.path.isfile(span_table_src):
+    datas.append((span_table_src, "docs"))
+
 a = Analysis(
     ['portal_frame_gui.py'],
     pathex=[],

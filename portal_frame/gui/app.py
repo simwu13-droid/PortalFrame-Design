@@ -391,6 +391,38 @@ class PortalFrameApp(tk.Tk):
         self.raf_section.bind_change(self._on_section_change)
         self._update_section_info()
 
+        self._section_header(parent, "EFFECTIVE LENGTHS  (ULS Capacity Check)")
+
+        self.col_Le = LabeledEntry(parent, "Column unbraced L", 4.5, "m")
+        self.col_Le.pack(fill="x", **pad)
+        self.col_Le.bind_change(self._on_design_input_change)
+
+        self.raf_Le = LabeledEntry(parent, "Rafter unbraced L", 6.0, "m")
+        self.raf_Le.pack(fill="x", **pad)
+        self.raf_Le.bind_change(self._on_design_input_change)
+
+        self._section_header(parent, "SERVICEABILITY LIMITS  (SLS Deflection)")
+
+        self.apex_limit_wind = LabeledEntry(
+            parent, "Apex dy limit (Wind)    span /", 180, "")
+        self.apex_limit_wind.pack(fill="x", **pad)
+        self.apex_limit_wind.bind_change(self._on_design_input_change)
+
+        self.apex_limit_eq = LabeledEntry(
+            parent, "Apex dy limit (EQ)      span /", 360, "")
+        self.apex_limit_eq.pack(fill="x", **pad)
+        self.apex_limit_eq.bind_change(self._on_design_input_change)
+
+        self.drift_limit_wind = LabeledEntry(
+            parent, "Eave drift limit (Wind) h /", 150, "")
+        self.drift_limit_wind.pack(fill="x", **pad)
+        self.drift_limit_wind.bind_change(self._on_design_input_change)
+
+        self.drift_limit_eq = LabeledEntry(
+            parent, "Eave drift limit (EQ)   h /", 300, "")
+        self.drift_limit_eq.pack(fill="x", **pad)
+        self.drift_limit_eq.bind_change(self._on_design_input_change)
+
         self._section_header(parent, "SUPPORTS")
 
         sup_frame = tk.Frame(parent, bg=COLORS["bg_panel"])
@@ -467,6 +499,10 @@ class PortalFrameApp(tk.Tk):
         self._invalidate_analysis()
         self._update_section_info()
         self._update_eq_results()
+
+    def _on_design_input_change(self, *_):
+        """Effective length changed — invalidate stale design checks."""
+        self._invalidate_analysis()
 
     def _on_roof_type_change(self, *_):
         if self.roof_type_var.get() == "mono":
@@ -1397,6 +1433,10 @@ class PortalFrameApp(tk.Tk):
                 self.diagram_case_var.get() != "(none)"):
             diagram = self._build_diagram_data()
 
+        self.preview.set_design_checks(self._bucket_design_checks())
+        self.preview.set_sls_checks(
+            self._analysis_output.sls_checks if self._analysis_output else None
+        )
         self.preview.update_frame(geom, supports, loads, diagram)
         self._update_summary()
 
@@ -1786,6 +1826,7 @@ class PortalFrameApp(tk.Tk):
             solver.solve()
 
             self._analysis_output = solver.output
+            self._run_design_checks()
             self._update_results_panel()
             self._update_diagram_dropdowns()
             self._draw_preview()
@@ -1798,6 +1839,131 @@ class PortalFrameApp(tk.Tk):
             traceback.print_exc()
             messagebox.showerror("Analysis Error", str(e))
             self.status_label.config(text=f"Analysis error: {e}", fg=COLORS["error"])
+
+    def _bucket_design_checks(self) -> dict | None:
+        """Group design checks into canvas-line buckets for the preview overlay.
+
+        Returns a dict with keys "col_L", "col_R", "raf_L", "raf_R" (mono
+        omits "raf_R") whose values are the worst-utilisation
+        MemberDesignCheck for each canvas line, or None if no checks exist.
+
+        Crane-bracket sub-members and any other split members are collapsed
+        into the parent line via worst-case utilisation.
+        """
+        out = self._analysis_output
+        if out is None or not out.design_checks:
+            return None
+        topo = self._analysis_topology
+        if topo is None:
+            return None
+
+        # Resolve span to determine which side each member belongs to
+        try:
+            span = self.span.get()
+        except Exception:
+            return None
+        if span <= 0:
+            return None
+        eps = 1e-3 * max(span, 1.0)
+
+        groups: dict[str, object] = {}
+
+        def _consider(key: str, chk):
+            existing = groups.get(key)
+            if existing is None:
+                groups[key] = chk
+                return
+            # Worst (highest util) wins; NO_DATA is treated as -inf so any
+            # actual check supersedes it.
+            def rank(c):
+                if c.status == "NO_DATA":
+                    return -1.0
+                return c.util_combined
+            if rank(chk) > rank(existing):
+                groups[key] = chk
+
+        for chk in out.design_checks:
+            member = topo.members.get(chk.member_id)
+            if member is None:
+                continue
+            n_start = topo.nodes[member.node_start]
+            n_end = topo.nodes[member.node_end]
+            xs = [n_start.x, n_end.x]
+            x_min = min(xs)
+            x_max = max(xs)
+
+            if chk.member_role == "col":
+                if x_max <= eps:
+                    _consider("col_L", chk)
+                elif x_min >= span - eps:
+                    _consider("col_R", chk)
+                else:
+                    # Unexpected column orientation — skip (shouldn't happen)
+                    pass
+            else:  # rafter
+                # Left rafter: starts at left eave (x≈0), ends at apex (x<span)
+                # Right rafter: starts at apex, ends at right eave (x≈span)
+                # Mono: single rafter spanning x=0 to x=span -> "raf_L"
+                if x_min <= eps and x_max < span - eps:
+                    _consider("raf_L", chk)
+                elif x_min > eps and x_max >= span - eps:
+                    _consider("raf_R", chk)
+                else:
+                    # Mono full-span rafter, or unusual case — bucket as raf_L
+                    _consider("raf_L", chk)
+
+        return groups
+
+    def _run_design_checks(self):
+        """Run AS/NZS 4600 capacity checks on the current analysis output.
+
+        Looks up section capacities from the Formsteel span table at the
+        user-supplied effective lengths, then writes a list of
+        MemberDesignCheck onto self._analysis_output.design_checks.
+        """
+        out = self._analysis_output
+        if out is None or out.uls_envelope_curves is None:
+            return
+        if self._analysis_topology is None:
+            return
+
+        from portal_frame.standards.cfs_check import check_all_members
+        from portal_frame.standards.serviceability import (
+            check_apex_deflection, check_eave_drift,
+        )
+
+        col_name = self.col_section.get()
+        raf_name = self.raf_section.get()
+        col_sec = self.section_library.get(col_name)
+        raf_sec = self.section_library.get(raf_name)
+        if col_sec is None or raf_sec is None:
+            return
+
+        out.design_checks = check_all_members(
+            topology=self._analysis_topology,
+            envelope_curves=out.uls_envelope_curves,
+            column_section=col_sec,
+            rafter_section=raf_sec,
+            L_col=self.col_Le.get(),
+            L_raf=self.raf_Le.get(),
+            combo_results=out.combo_results,
+        )
+
+        apex_checks = check_apex_deflection(
+            topology=self._analysis_topology,
+            combo_results=out.combo_results,
+            combo_descriptions=out.combo_descriptions,
+            limit_ratio_wind=int(round(self.apex_limit_wind.get())),
+            limit_ratio_eq=int(round(self.apex_limit_eq.get())),
+        )
+        drift_checks = check_eave_drift(
+            topology=self._analysis_topology,
+            combo_results=out.combo_results,
+            combo_descriptions=out.combo_descriptions,
+            limit_ratio_wind=int(round(self.drift_limit_wind.get())),
+            limit_ratio_eq=int(round(self.drift_limit_eq.get())),
+        )
+        out.sls_checks = apex_checks + drift_checks
 
     def _invalidate_analysis(self):
         """Clear stale analysis results when inputs change.
@@ -1822,7 +1988,7 @@ class PortalFrameApp(tk.Tk):
             self.status_label.config(text="", fg=COLORS["fg_dim"])
 
     def _update_results_panel(self):
-        """Display envelope results in the summary text widget."""
+        """Display envelope results and design checks in the summary widget."""
         out = self._analysis_output
         if out is None:
             return
@@ -1846,9 +2012,72 @@ class PortalFrameApp(tk.Tk):
                     lines.append(f"  {label:8s} = {e.value:>8.1f} mm   "
                                  f"({e.combo_name})")
 
+        # Design check block — appended below envelopes
+        fail_lines: list[int] = []   # 0-based line indices to highlight red
+        nodata_lines: list[int] = []
+        if out.design_checks:
+            lines.append("Design Check (AS/NZS 4600):")
+            for chk in out.design_checks:
+                if chk.status == "NO_DATA":
+                    line = (
+                        f"  M{chk.member_id} ({chk.member_role}) {chk.section_name:12s}"
+                        f"  L={chk.L_eff:.1f}m  NO DATA"
+                    )
+                    nodata_lines.append(len(lines))
+                else:
+                    line = (
+                        f"  M{chk.member_id} ({chk.member_role}) {chk.section_name:12s}"
+                        f"  L={chk.L_eff:.1f}m"
+                        f"  N/\u03c6N={chk.util_axial:.2f}"
+                        f"  M/\u03c6Mb={chk.util_bending:.2f}"
+                        f"  \u03a3={chk.util_combined:.2f}  {chk.status}"
+                    )
+                    if chk.status == "FAIL":
+                        fail_lines.append(len(lines))
+                lines.append(line)
+
+        # SLS deflection rows — grouped by metric (apex_dy, drift)
+        if out.sls_checks:
+            metric_labels = {
+                "apex_dy": ("Serviceability (Apex dy):", "\u03b4v"),
+                "drift":   ("Serviceability (Eave drift):", "\u03b4h"),
+            }
+            for metric, (header, symbol) in metric_labels.items():
+                metric_rows = [c for c in out.sls_checks if c.metric == metric]
+                if not metric_rows:
+                    continue
+                lines.append(header)
+                for slc in metric_rows:
+                    line = (
+                        f"  {slc.category.upper():4s}  "
+                        f"{symbol}={slc.deflection_mm:>7.1f}mm  "
+                        f"limit={slc.reference_symbol}/{slc.ratio} "
+                        f"({slc.limit_mm:.1f}mm)  "
+                        f"actual={slc.reference_symbol}/{slc.actual_ratio}  "
+                        f"util={slc.util:.2f}  {slc.status}  "
+                        f"({slc.controlling_combo})"
+                    )
+                    if slc.status == "FAIL":
+                        fail_lines.append(len(lines))
+                    lines.append(line)
+
+        # Auto-grow the text widget so all lines are visible
+        new_height = max(8, len(lines))
+        if int(self._results_text.cget("height")) != new_height:
+            self._results_text.config(height=new_height)
+
         self._results_text.config(state="normal")
         self._results_text.delete("1.0", "end")
         self._results_text.insert("1.0", "\n".join(lines))
+
+        # Tag FAIL rows red and NO_DATA rows dim
+        self._results_text.tag_configure("dc_fail", foreground=COLORS["error"])
+        self._results_text.tag_configure("dc_nodata", foreground=COLORS["fg_dim"])
+        for ln in fail_lines:
+            self._results_text.tag_add("dc_fail", f"{ln+1}.0", f"{ln+1}.end")
+        for ln in nodata_lines:
+            self._results_text.tag_add("dc_nodata", f"{ln+1}.0", f"{ln+1}.end")
+
         self._results_text.config(state="disabled")
 
     def _update_diagram_dropdowns(self):
@@ -1894,6 +2123,9 @@ class PortalFrameApp(tk.Tk):
         if out.sls_envelope_curves is not None:
             values.append("SLS Envelope")
             self._diagram_display_to_name["SLS Envelope"] = "SLS Envelope"
+        if out.sls_wind_only_envelope_curves is not None:
+            values.append("SLS Wind Only Envelope")
+            self._diagram_display_to_name["SLS Wind Only Envelope"] = "SLS Wind Only Envelope"
 
         self.diagram_case_combo["values"] = values
 
@@ -1954,6 +2186,8 @@ class PortalFrameApp(tk.Tk):
             envelope_curves = out.uls_envelope_curves
         elif name == "SLS Envelope":
             envelope_curves = out.sls_envelope_curves
+        elif name == "SLS Wind Only Envelope":
+            envelope_curves = out.sls_wind_only_envelope_curves
 
         if envelope_curves is not None:
             env_max, env_min = envelope_curves
@@ -1996,6 +2230,14 @@ class PortalFrameApp(tk.Tk):
         cfg["sections"] = {
             "column": self.col_section.get(),
             "rafter": self.raf_section.get(),
+            "col_Le": self.col_Le.get(),
+            "raf_Le": self.raf_Le.get(),
+        }
+        cfg["serviceability"] = {
+            "apex_wind_ratio": int(round(self.apex_limit_wind.get())),
+            "apex_eq_ratio": int(round(self.apex_limit_eq.get())),
+            "drift_wind_ratio": int(round(self.drift_limit_wind.get())),
+            "drift_eq_ratio": int(round(self.drift_limit_eq.get())),
         }
         cfg["supports"] = {
             "left_base": self.left_support.get(),
@@ -2080,7 +2322,16 @@ class PortalFrameApp(tk.Tk):
         raf = sec.get("rafter", "650180295S2")
         self.col_section.set(col)
         self.raf_section.set(raf)
+        self.col_Le.set(sec.get("col_Le", 4.5))
+        self.raf_Le.set(sec.get("raf_Le", 6.0))
         self._update_section_info()
+
+        # Serviceability limits
+        slsc = cfg.get("serviceability", {})
+        self.apex_limit_wind.set(slsc.get("apex_wind_ratio", 180))
+        self.apex_limit_eq.set(slsc.get("apex_eq_ratio", 360))
+        self.drift_limit_wind.set(slsc.get("drift_wind_ratio", 150))
+        self.drift_limit_eq.set(slsc.get("drift_eq_ratio", 300))
 
         # Supports
         sup = cfg.get("supports", {})

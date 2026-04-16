@@ -30,6 +30,11 @@ COLORS = {
     "diagram_axial":     "#e5c07b",
     "analyse_btn":       "#2d7d46",
     "analyse_btn_hover": "#38a055",
+    # Design check overlay colours
+    "dc_pass":           "#4ec9b0",   # green: util <= 0.85
+    "dc_warn":           "#dcdcaa",   # amber: 0.85 < util <= 1.0
+    "dc_fail":           "#f44747",   # red:   util > 1.0
+    "dc_nodata":         "#808080",   # grey: section has no span table data
 }
 
 FONT_FAMILY = "Segoe UI"

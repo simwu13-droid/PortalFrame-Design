@@ -78,6 +78,57 @@ class EnvelopeEntry:
 
 
 @dataclass
+class MemberDesignCheck:
+    """AS/NZS 4600 member capacity check result for one member.
+
+    Forces are envelope extremes from the ULS envelope curves; checks use
+    pre-computed φN_c / φM_bx from the Formsteel span table at the user-
+    supplied effective length.
+    """
+    member_id: int
+    member_role: str             # "col" | "raf"
+    section_name: str            # SpaceGass library name
+    L_eff: float                 # m
+    phi_Nc: float | None         # kN, None if no span table data
+    phi_Nt: float                # kN, always computed (0.85 * Ag * fu)
+    phi_Mbx: float | None        # kNm, None if no span table data
+    N_compression: float         # kN, abs of most -ve axial (>=0)
+    N_tension: float             # kN, most +ve axial (>=0)
+    M_max: float                 # kNm, max |moment|
+    util_axial: float            # max(N*c/φNc, N*t/φNt)
+    util_bending: float          # M*/φMbx
+    util_combined: float         # linear interaction
+    status: str                  # "PASS" | "FAIL" | "NO_DATA"
+    controlling_combo_n: str = ""
+    controlling_combo_m: str = ""
+
+
+@dataclass
+class SLSCheck:
+    """Serviceability deflection check result.
+
+    One instance per (metric, category) pair. Two metrics are supported:
+      - "apex_dy" : vertical deflection at the ridge, limit = span / ratio
+      - "drift"   : horizontal deflection at an eave node, limit = h / ratio
+
+    `actual_ratio` is the X that would make `ref_length / X == deflection`
+    — i.e. what the frame ACTUALLY deformed by. `ratio` is the user's
+    design limit. These are usually different and both are informative.
+    """
+    metric: str                  # "apex_dy" | "drift"
+    category: str                # "wind" | "eq"
+    deflection_mm: float         # signed deflection at the measured point
+    limit_mm: float              # absolute limit = ref_length * 1000 / ratio
+    ratio: int                   # the X in the user's L/X or h/X input
+    actual_ratio: int            # ref_length / |deflection|, 9999 if ~0
+    util: float                  # |deflection| / limit
+    status: str                  # "PASS" | "FAIL"
+    controlling_combo: str = ""
+    reference_length_m: float = 0.0   # span (apex) or eave_height (drift)
+    reference_symbol: str = "L"       # "L" for span, "h" for column height
+
+
+@dataclass
 class AnalysisOutput:
     """Complete analysis output: per-case + combination results + envelopes."""
     case_results: dict[str, CaseResult]
@@ -88,3 +139,6 @@ class AnalysisOutput:
     # Envelope curves: (max, min) CaseResult pair per combo set, or None
     uls_envelope_curves: tuple | None = None   # (max CaseResult, min CaseResult)
     sls_envelope_curves: tuple | None = None
+    sls_wind_only_envelope_curves: tuple | None = None
+    design_checks: list[MemberDesignCheck] = field(default_factory=list)
+    sls_checks: list[SLSCheck] = field(default_factory=list)

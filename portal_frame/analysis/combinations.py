@@ -99,9 +99,9 @@ def _update_abs_max(env, key, value, combo_name, mid=0, pct=0.0):
 
 
 def compute_envelope_curves(output: AnalysisOutput) -> None:
-    """Compute per-station envelope curves for ULS and SLS combo sets.
+    """Compute per-station envelope curves for ULS, SLS, and SLS-Wind-Only.
 
-    For each combo set (ULS, SLS), produces two synthetic CaseResult objects:
+    For each combo set, produces two synthetic CaseResult objects:
     - envelope_max: max of each attribute at each station across all combos
     - envelope_min: min of each attribute at each station across all combos
 
@@ -110,25 +110,39 @@ def compute_envelope_curves(output: AnalysisOutput) -> None:
     a display-only construct — it does not represent any single physical
     state — but shows the bounding curves that the member must survive.
 
-    Mutates output in place by setting output.uls_envelope_curves and
-    output.sls_envelope_curves.
+    Mutates output in place.
     """
     output.uls_envelope_curves = _build_envelope_pair(
         output.combo_results, prefix="ULS")
     output.sls_envelope_curves = _build_envelope_pair(
         output.combo_results, prefix="SLS")
 
+    # Wind-only SLS envelope — filter by description substring
+    wind_only_names = {
+        name for name, desc in output.combo_descriptions.items()
+        if name.startswith("SLS") and "wind only" in desc.lower()
+    }
+    if wind_only_names:
+        output.sls_wind_only_envelope_curves = _build_envelope_pair(
+            output.combo_results, prefix="SLS",
+            name_filter=lambda n: n in wind_only_names)
+    else:
+        output.sls_wind_only_envelope_curves = None
+
 
 def _build_envelope_pair(
     combo_results: dict[str, CaseResult],
     prefix: str,
+    name_filter: callable = None,
 ) -> tuple | None:
     """Build (max, min) CaseResult pair from all combos matching the prefix.
 
-    Returns None if no combos match the prefix.
+    If name_filter is supplied, combos must also pass the filter.
+    Returns None if no combos match.
     """
     matching = {name: cr for name, cr in combo_results.items()
-                if name.startswith(prefix)}
+                if name.startswith(prefix)
+                and (name_filter is None or name_filter(name))}
     if not matching:
         return None
 
