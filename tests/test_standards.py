@@ -5,7 +5,7 @@ import pytest
 
 from portal_frame.standards.utils import lerp
 from portal_frame.standards.earthquake_nzs1170_5 import (
-    NZ_HAZARD_FACTORS,
+    NZ_FAULT_DISTANCES, NZ_HAZARD_FACTORS,
     spectral_shape_factor,
     calculate_earthquake_forces,
 )
@@ -327,6 +327,52 @@ class TestNZHazardFactors:
 
     def test_christchurch_z(self):
         assert NZ_HAZARD_FACTORS["Christchurch"] == 0.30
+
+    def test_has_full_table_count(self):
+        """Table 3.3 (Amdt 1 Sep 2016) has 129 locations."""
+        assert len(NZ_HAZARD_FACTORS) == 129
+
+    def test_z_in_valid_range(self):
+        """All Z values must be in the published NZ range 0.10..0.60."""
+        for loc, z in NZ_HAZARD_FACTORS.items():
+            assert 0.10 <= z <= 0.60, f"{loc}: Z={z} out of range"
+
+    def test_highest_hazard_locations(self):
+        """Otira and Arthurs Pass are the highest-Z locations at 0.60."""
+        assert NZ_HAZARD_FACTORS["Otira"] == 0.60
+        assert NZ_HAZARD_FACTORS["Arthurs Pass"] == 0.60
+
+    def test_spot_check_northland_low(self):
+        """Far-north locations all sit at the 0.10 floor."""
+        for loc in ("Kaitaia", "Paihia/Russell", "Kaikohe", "Whangarei", "Dargaville"):
+            assert NZ_HAZARD_FACTORS[loc] == 0.10
+
+    def test_spot_check_napier_hastings(self):
+        assert NZ_HAZARD_FACTORS["Napier"] == 0.38
+        assert NZ_HAZARD_FACTORS["Hastings"] == 0.39
+
+    def test_spot_check_oban(self):
+        """Southernmost location (#129 Oban/Stewart Island)."""
+        assert NZ_HAZARD_FACTORS["Oban"] == 0.14
+
+
+class TestNZFaultDistances:
+    def test_fault_distance_is_subset_of_hazard_factors(self):
+        """Every NZ_FAULT_DISTANCES key must also be in NZ_HAZARD_FACTORS."""
+        for loc in NZ_FAULT_DISTANCES:
+            assert loc in NZ_HAZARD_FACTORS, f"{loc} missing from hazard factors"
+
+    def test_wellington_near_fault(self):
+        """Wellington CBD is near the Wellington Fault — D <= 2 km."""
+        assert NZ_FAULT_DISTANCES["Wellington CBD (north of Basin Reserve)"] == "<=2"
+
+    def test_hanmer_springs_near_fault(self):
+        assert NZ_FAULT_DISTANCES["Hanmer Springs"] == "2-6"
+
+    def test_auckland_has_no_fault_distance(self):
+        """Far-field locations have no specified D (N(T,D) defaults to 1.0)."""
+        assert "Auckland" not in NZ_FAULT_DISTANCES
+        assert "Christchurch" not in NZ_FAULT_DISTANCES
 
 
 class TestSpectralShapeFactor:

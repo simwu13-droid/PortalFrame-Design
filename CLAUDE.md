@@ -64,7 +64,7 @@ portal_frame/
     tabs/            (empty — tabs currently built inline in app.py)
   cli.py           CLI entry point
   run_gui.py       GUI entry point
-tests/             213 unit tests (standards, models, output, crane, PyNite solver, CFS checks incl. shear, serviceability)
+tests/             223 unit tests (standards, models, output, crane, PyNite solver, CFS checks incl. shear, serviceability)
 docs/
   CFS_Span_Table.xlsx  Formsteel span table (P kN, Mx kNm, Vy kN sheets; 1m–25m for P/Mx, no L for Vy)
 ```
@@ -148,7 +148,7 @@ docs/
 **Status: IMPLEMENTED** — equivalent static method, forces lumped at knee nodes.
 
 ### Implementation
-- `standards/earthquake_nzs1170_5.py`: `NZ_HAZARD_FACTORS` (19 locations), `_CH_TABLE` (5 soil classes), `spectral_shape_factor()`, `calculate_earthquake_forces()`
+- `standards/earthquake_nzs1170_5.py`: `NZ_HAZARD_FACTORS` (full 129-location Table 3.3, Amdt 1 Sep 2016), `NZ_FAULT_DISTANCES` (display-only D(km) dict for near-fault info, strings like `"<=2"` / `"2-6"`), `_CH_TABLE` (5 soil classes), `spectral_shape_factor()`, `calculate_earthquake_forces()`. GUI shows the D value under the location dropdown as a hint for setting N(T,D) manually; the seismic calc pipeline does not auto-compute N(T,D) — the engineer enters it.
 - `_CH_TABLE` uses NON-BRACKETED values from Table 3.1 (equivalent static method). Bracketed values are for modal response spectrum only. Classes B-E plateau at the non-bracketed value for T=0 to ~0.3-0.6s.
 - `standards/combinations_nzs1170_0.py`: `eq_case_names` param on `build_combinations()` adds `1.0G + E+/E-` (ULS) and `G + E(s)` (SLS)
 - `io/spacegass_writer.py`: NODELOADS section with `Case,Node,FX,FY,FZ,MX,MY,MZ,LoadCategory` (9 columns, verified in SpaceGass v14.25)
@@ -253,7 +253,7 @@ Overlay state is single-slot (`_overlay_mode: "off" | "uls" | "sls"`), giving mu
 HUD buttons support optional tooltips (hover text drawn as canvas items, chained via `add="+"` on Enter/Leave handlers). All annotation labels (dimensions, ULS capacity, SLS badges) are draggable — offsets persist across redraws and overlay toggles.
 
 ## Testing
-- Unit tests: `python -m pytest tests/ -v` (213 tests covering standards, models, output, crane, PyNite solver, CFS checks incl. shear, serviceability)
+- Unit tests: `python -m pytest tests/ -v` (223 tests covering standards, models, output, crane, PyNite solver, CFS checks incl. shear, serviceability)
 - GUI launch test: `python -m portal_frame.run_gui &`, wait a few seconds, then `tasklist | grep python`
 - SpaceGass output files must be opened in SpaceGass v14.25 to verify format correctness.
 - Output verification: generate with both old wrapper and new package, `diff` must show identical output.

@@ -15,7 +15,7 @@ from portal_frame.io.section_library import load_all_sections
 from portal_frame.models.geometry import PortalFrameGeometry
 from portal_frame.models.loads import RafterZoneLoad, WindCase, LoadInput, EarthquakeInputs
 from portal_frame.standards.earthquake_nzs1170_5 import (
-    NZ_HAZARD_FACTORS, calculate_earthquake_forces,
+    NZ_FAULT_DISTANCES, NZ_HAZARD_FACTORS, calculate_earthquake_forces,
 )
 from portal_frame.models.supports import SupportCondition
 from portal_frame.standards.wind_nzs1170_2 import (
@@ -692,10 +692,24 @@ class PortalFrameApp(tk.Tk):
         )
         self.eq_location.pack(fill="x", **pad)
         self.eq_location.bind_change(self._on_eq_location_change)
+        # Schedule initial fault-distance label update after layout finishes.
+        # Using after_idle avoids a chicken-and-egg with the widget below
+        # that the handler also touches (eq_fault_dist_label).
+        parent.after_idle(self._on_eq_location_change)
 
         self.eq_Z = LabeledEntry(self.eq_content, "Z (hazard factor)", 0.40, "")
         self.eq_Z.pack(fill="x", **pad)
         self.eq_Z.bind_change(self._update_eq_results)
+
+        # D(km) info label — shown when the selected location has a
+        # specified shortest major fault distance. User uses this to pick
+        # the N(T,D) near-fault factor below.
+        self.eq_fault_dist_label = tk.Label(
+            self.eq_content, text="", font=FONT_SMALL,
+            fg=COLORS["warning"], bg=COLORS["bg_panel"],
+            anchor="w", justify="left",
+        )
+        self.eq_fault_dist_label.pack(fill="x", padx=10, pady=(0, 2))
 
         self.eq_soil = LabeledCombo(
             self.eq_content, "Soil Class", values=["A", "B", "C", "D", "E"],
@@ -773,6 +787,18 @@ class PortalFrameApp(tk.Tk):
         loc = self.eq_location.get()
         if loc in NZ_HAZARD_FACTORS:
             self.eq_Z.set(NZ_HAZARD_FACTORS[loc])
+        # Surface the fault-distance info when available. Locations without
+        # a specified D have the near-fault factor N(T,D) default to 1.0.
+        d_value = NZ_FAULT_DISTANCES.get(loc)
+        if d_value:
+            self.eq_fault_dist_label.config(
+                text=f"D = {d_value} km  (shortest distance to a major fault) — "
+                     f"set N(T,D) below per Table 3.6"
+            )
+        else:
+            self.eq_fault_dist_label.config(
+                text="No specified fault distance — N(T,D) = 1.0"
+            )
         self._update_eq_results()
 
     def _on_ductility_change(self, *_):
