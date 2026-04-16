@@ -91,6 +91,7 @@ class LabeledCombo(tk.Frame):
         self.combo.bind("<Escape>", self._on_escape)
         self.combo.bind("<FocusOut>", self._on_focus_out)
         self.combo.bind("<<ComboboxSelected>>", self._on_selected)
+        self.combo.bind("<FocusIn>", self._on_focus_in)
 
     # Public API — signatures unchanged.
 
@@ -114,8 +115,15 @@ class LabeledCombo(tk.Frame):
 
     # --- Internal event handlers ---------------------------------------
 
+    def _on_focus_in(self, ev):
+        """Select all entry text so typing replaces the current value."""
+        self.combo.select_range(0, "end")
+        self.combo.icursor("end")
+
     def _on_key_release(self, ev):
-        """Filter master list by substring of current entry text."""
+        """Filter master list by substring of current entry text. Popdown is NOT
+        auto-opened — user opens it manually via arrow button or Down key.
+        """
         if ev.keysym in self._NAV_KEYSYMS:
             return
         if self._filtering:
@@ -124,9 +132,6 @@ class LabeledCombo(tk.Frame):
         try:
             filtered = _filter_substring(self._all_values, self.var.get())
             self.combo["values"] = filtered
-            # Re-open the popdown so the narrowed list is visible.
-            if filtered:
-                self.combo.event_generate("<Down>")
         finally:
             self._filtering = False
 
