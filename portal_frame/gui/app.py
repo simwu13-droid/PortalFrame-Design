@@ -32,6 +32,7 @@ from portal_frame.standards.earthquake_nzs1170_5 import calculate_earthquake_for
 from portal_frame.models.supports import SupportCondition
 from portal_frame.gui.wind_generator import (
     auto_generate_wind_cases, synthesize_wind_cases,
+    get_h_and_depth, get_wind_params,
 )
 from portal_frame.gui.persistence import (
     save_config, load_config, open_recent, update_recent_menu,
@@ -382,6 +383,12 @@ class PortalFrameApp(tk.Tk):
 
     def _synthesize_wind_cases(self):
         return synthesize_wind_cases(self)
+
+    def _get_h_and_depth(self):
+        return get_h_and_depth(self)
+
+    def _get_wind_params(self):
+        return get_wind_params(self)
 
     def _update_preview(self, *_):
         """Called when inputs change — invalidates stale analysis and redraws.
