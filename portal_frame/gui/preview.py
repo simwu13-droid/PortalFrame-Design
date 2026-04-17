@@ -17,6 +17,7 @@ from portal_frame.gui.canvas.labels import (
     make_draggable, drag_start, drag_move, drag_end,
     create_label, create_boxed_draggable_label, resolve_overlaps,
 )
+from portal_frame.gui.canvas.hud import draw_hud, draw_axis_indicator
 
 
 DIAGRAM_COLORS = {
@@ -30,10 +31,6 @@ DIAGRAM_MAX_PX = 60
 # Fixed padding (px) reserved for peak-label positioning around diagram bounds.
 _DIAGRAM_PAD = 20
 _DIAGRAM_LABEL_EXTRA = 12
-
-
-# HUD display letter for each diagram type (user-facing, matches keyboard shortcut)
-_HUD_DISPLAY_LETTER = {"M": "M", "V": "S", "N": "N", "D": "D", "F": "F"}
 
 
 
@@ -713,165 +710,9 @@ class FramePreview(tk.Canvas):
         self._resolve_overlaps()
 
         # Axis indicator (bottom-left corner)
-        self._draw_axis_indicator()
+        draw_axis_indicator(self)
 
-        self._draw_hud()
-
-    def _draw_axis_indicator(self):
-        """Draw X/Y axis indicator in bottom-left corner."""
-        h = self.winfo_height()
-        ox, oy = 35, h - 35  # Origin point
-        length = 25
-        arrow_col = COLORS["fg_dim"]
-        label_col = COLORS["fg_bright"]
-
-        # X axis (rightward)
-        self.create_line(ox, oy, ox + length, oy,
-                         fill=arrow_col, width=2, arrow="last")
-        self.create_text(ox + length + 8, oy, text="X",
-                         fill=label_col, font=FONT_SMALL, anchor="w")
-
-        # Y axis (upward)
-        self.create_line(ox, oy, ox, oy - length,
-                         fill=arrow_col, width=2, arrow="last")
-        self.create_text(ox, oy - length - 8, text="Y",
-                         fill=label_col, font=FONT_SMALL, anchor="s")
-
-    def _draw_hud(self):
-        """Draw HUD controls in top-right corner: [Normalize]  [-] M [+]
-
-        Controls are drawn as canvas items (not tk widgets) so they blend
-        with the dark canvas theme. All items tagged "hud" for clean redraw.
-        """
-        w = self.winfo_width()
-        if w < 200:
-            return
-
-        margin = 8
-        btn_h = 22
-        btn_pad_x = 8
-        gap = 6
-
-        bg = COLORS["hud_bg"]
-        bg_hover = COLORS["hud_bg_hover"]
-        border_col = COLORS["border"]
-        fg = COLORS["fg_dim"]
-        fg_hover = COLORS["fg_bright"]
-
-        def draw_button(cx, top_y, text, click_handler, text_color=None, tooltip=None):
-            """Draw a rect+text button centered at cx. Returns (x1, x2).
-
-            `tooltip`, when set, renders a small label near the cursor on
-            hover. The extra <Enter>/<Leave> bindings use add="+" to chain
-            onto the existing fill/colour hover handlers.
-            """
-            if text_color is None:
-                text_color = fg
-            text_w = len(text) * 7 + 2 * btn_pad_x
-            x1 = cx - text_w / 2
-            x2 = cx + text_w / 2
-            y1 = top_y
-            y2 = top_y + btn_h
-
-            rect = self.create_rectangle(x1, y1, x2, y2,
-                fill=bg, outline=border_col, width=1, tags=("hud",))
-            txt = self.create_text((x1 + x2) / 2, (y1 + y2) / 2,
-                text=text, fill=text_color, font=FONT_SMALL, tags=("hud",))
-
-            for item in (rect, txt):
-                self.tag_bind(item, "<Enter>",
-                    lambda e, r=rect, t=txt: (
-                        self.itemconfig(r, fill=bg_hover),
-                        self.itemconfig(t, fill=fg_hover),
-                        self.config(cursor="hand2")))
-                self.tag_bind(item, "<Leave>",
-                    lambda e, r=rect, t=txt, tc=text_color: (
-                        self.itemconfig(r, fill=bg),
-                        self.itemconfig(t, fill=tc),
-                        self.config(cursor="")))
-                self.tag_bind(item, "<ButtonRelease-1>",
-                    lambda e, h=click_handler: h())
-                if tooltip:
-                    self.tag_bind(item, "<Enter>",
-                        lambda e, msg=tooltip: self._show_tooltip(e, msg),
-                        add="+")
-                    self.tag_bind(item, "<Leave>",
-                        lambda e: self._hide_tooltip(),
-                        add="+")
-
-            return x1, x2
-
-        # Active diagram type and color for the middle label
-        dtype = self._active_diagram_type
-        display_letter = _HUD_DISPLAY_LETTER.get(dtype, dtype)
-        dtype_color = DIAGRAM_COLORS.get(
-            {"D": "\u03b4"}.get(dtype, dtype),
-            COLORS["fg_bright"])
-
-        top_y = margin
-
-        # Layout right-to-left: [+] ... letter ... [-] ... [Normalize]
-        # [+] button (rightmost)
-        plus_cx = w - margin - 16
-        def on_plus():
-            key = self._active_diagram_type
-            self._diagram_scales[key] = min(10.0,
-                self._diagram_scales.get(key, 1.0) * 1.15)
-            if self._geom:
-                self.update_frame(self._geom, self._supports,
-                                  self._loads, self._diagram)
-        x1_plus, _ = draw_button(plus_cx, top_y, "+", on_plus)
-
-        # Type label between [-] and [+]
-        label_cx = x1_plus - gap - 7
-        self.create_text(label_cx, top_y + btn_h / 2,
-            text=display_letter, fill=dtype_color,
-            font=FONT_SMALL, tags=("hud",))
-
-        # [-] button
-        minus_cx = label_cx - gap - 16
-        def on_minus():
-            key = self._active_diagram_type
-            self._diagram_scales[key] = max(0.1,
-                self._diagram_scales.get(key, 1.0) / 1.15)
-            if self._geom:
-                self.update_frame(self._geom, self._supports,
-                                  self._loads, self._diagram)
-        x1_minus, _ = draw_button(minus_cx, top_y, "-", on_minus)
-
-        # [Normalize] button
-        norm_cx = x1_minus - gap - 35
-        def on_normalize():
-            self._diagram_scales = {k: 1.0 for k in self._diagram_scales}
-            self._view_dirty = True
-            if self._geom:
-                self.update_frame(self._geom, self._supports,
-                                  self._loads, self._diagram)
-        x1_norm, _ = draw_button(norm_cx, top_y, "Normalize", on_normalize)
-
-        # [ULS] toggle button — member capacity check overlay
-        uls_cx = x1_norm - gap - 16
-        uls_color = COLORS["dc_pass"] if self._overlay_mode == "uls" else fg
-        x1_uls, _ = draw_button(
-            uls_cx, top_y, "ULS", self.toggle_uls_overlay,
-            text_color=uls_color,
-            tooltip="Enable Member Capacity Check (ULS) — bending, axial, combined per AS/NZS 4600")
-
-        # [SLS] toggle button — serviceability overlay (left of ULS)
-        sls_cx = x1_uls - gap - 16
-        sls_color = COLORS["dc_pass"] if self._overlay_mode == "sls" else fg
-        x1_sls, _ = draw_button(
-            sls_cx, top_y, "SLS", self.toggle_sls_overlay,
-            text_color=sls_color,
-            tooltip="Enable Serviceability Check (SLS) — apex deflection vs span/X limit")
-
-        # [DIM] toggle button — dimension annotations (left of SLS)
-        dim_cx = x1_sls - gap - 16
-        dim_color = COLORS["fg_bright"] if self._show_dimensions else fg
-        draw_button(
-            dim_cx, top_y, "DIM", self.toggle_dimensions,
-            text_color=dim_color,
-            tooltip="Toggle dimensions (span, eave, ridge, pitches)")
+        draw_hud(self, DIAGRAM_COLORS)
 
     # ── Force diagram drawing ──
 
