@@ -15,6 +15,10 @@ from portal_frame.gui.tabs.crane_tab import (
     build_crane_tab, on_crane_toggle, on_crane_param_change,
     add_crane_hc_row, remove_crane_hc_row,
 )
+from portal_frame.gui.tabs.frame_tab import (
+    build_frame_tab, build_geometry, on_frame_change, on_section_change,
+    on_design_input_change, on_roof_type_change, on_pitch_change,
+)
 
 from portal_frame.io.section_library import load_all_sections
 from portal_frame.models.geometry import PortalFrameGeometry
@@ -120,7 +124,7 @@ class PortalFrameApp(tk.Tk):
         for name in tab_names:
             self._create_tab_page(name)
 
-        self._build_frame_tab(self._tab_pages["Frame"])
+        build_frame_tab(self, self._tab_pages["Frame"])
         self._build_wind_tab(self._tab_pages["Wind"])
         self._build_earthquake_tab(self._tab_pages["Earthquake"])
         build_crane_tab(self, self._tab_pages["Crane"])
@@ -320,244 +324,23 @@ class PortalFrameApp(tk.Tk):
         tk.Label(hdr, text=f"  {text}", font=FONT_BOLD, fg=COLORS["accent"],
                  bg=COLORS["border"], anchor="w", pady=3).pack(fill="x")
 
-    # ── Frame Tab ──
+    def _on_frame_change(self, *args):
+        on_frame_change(self, *args)
 
-    def _build_frame_tab(self, parent):
-        pad = {"padx": 10, "pady": (0, 2)}
+    def _on_section_change(self, *args):
+        on_section_change(self, *args)
 
-        self._section_header(parent, "GEOMETRY")
+    def _on_design_input_change(self, *args):
+        on_design_input_change(self, *args)
 
-        # Roof type selector
-        roof_type_frame = tk.Frame(parent, bg=COLORS["bg_panel"])
-        roof_type_frame.pack(fill="x", **pad)
+    def _on_roof_type_change(self, *args):
+        on_roof_type_change(self, *args)
 
-        tk.Label(roof_type_frame, text="Roof Type", font=FONT, fg=COLORS["fg"],
-                 bg=COLORS["bg_panel"], width=14, anchor="w").pack(side="left")
-        self.roof_type_var = tk.StringVar(value="gable")
-        for text, val in [("Gable", "gable"), ("Mono", "mono")]:
-            tk.Radiobutton(
-                roof_type_frame, text=text, variable=self.roof_type_var,
-                value=val, font=FONT, fg=COLORS["fg"],
-                bg=COLORS["bg_panel"], selectcolor=COLORS["bg_input"],
-                activebackground=COLORS["bg_panel"],
-                activeforeground=COLORS["fg"],
-                command=self._on_roof_type_change,
-            ).pack(side="left", padx=(4, 8))
+    def _on_pitch_change(self, *args):
+        on_pitch_change(self, *args)
 
-        self.span = LabeledEntry(parent, "Span", 12.0, "m")
-        self.span.pack(fill="x", **pad)
-        self.span.bind_change(self._on_frame_change)
-
-        self.eave = LabeledEntry(parent, "Eave Height", 4.5, "m")
-        self.eave.pack(fill="x", **pad)
-        self.eave.bind_change(self._on_frame_change)
-
-        self.pitch = LabeledEntry(parent, "Roof Pitch 1 (a1)", 5.0, "deg")
-        self.pitch.pack(fill="x", **pad)
-        self.pitch.bind_change(self._on_pitch_change)
-
-        self.pitch2_frame = tk.Frame(parent, bg=COLORS["bg_panel"])
-        self.pitch2_frame.pack(fill="x", **pad)
-        self.pitch2 = LabeledEntry(self.pitch2_frame, "Roof Pitch 2 (a2)", 5.0, "deg")
-        self.pitch2.pack(fill="x")
-        self.pitch2.bind_change(self._on_pitch_change)
-
-        self.pitch_warning_label = tk.Label(
-            parent, text="", font=FONT_SMALL, fg=COLORS["warning"],
-            bg=COLORS["bg_panel"], anchor="w", justify="left",
-        )
-        self.pitch_warning_label.pack(fill="x", padx=10, pady=(0, 2))
-
-        self.bay = LabeledEntry(parent, "Bay Spacing", 6.0, "m")
-        self.bay.pack(fill="x", **pad)
-        self.bay.bind_change(self._on_frame_change)
-
-        self.building_depth = LabeledEntry(parent, "Building Depth (d)", 24.0, "m")
-        self.building_depth.pack(fill="x", **pad)
-
-        self._section_header(parent, "SECTIONS  (from SpaceGass Library)")
-
-        self.col_section = LabeledCombo(
-            parent, "Column", values=self.section_names, default="63020S2", width=24
-        )
-        self.col_section.pack(fill="x", **pad)
-
-        self.raf_section = LabeledCombo(
-            parent, "Rafter", values=self.section_names, default="650180295S2", width=24
-        )
-        self.raf_section.pack(fill="x", **pad)
-
-        self.sec_info = tk.Label(parent, text="", font=FONT_SMALL,
-                                 fg=COLORS["fg_dim"], bg=COLORS["bg_panel"],
-                                 anchor="w", justify="left")
-        self.sec_info.pack(fill="x", padx=10, pady=(0, 4))
-
-        self.col_section.bind_change(self._on_section_change)
-        self.raf_section.bind_change(self._on_section_change)
-        self._update_section_info()
-
-        self._section_header(parent, "EFFECTIVE LENGTHS  (ULS Capacity Check)")
-
-        self.col_Le = LabeledEntry(parent, "Column unbraced L", 4.5, "m")
-        self.col_Le.pack(fill="x", **pad)
-        self.col_Le.bind_change(self._on_design_input_change)
-
-        self.raf_Le = LabeledEntry(parent, "Rafter unbraced L", 6.0, "m")
-        self.raf_Le.pack(fill="x", **pad)
-        self.raf_Le.bind_change(self._on_design_input_change)
-
-        self._section_header(parent, "SERVICEABILITY LIMITS  (SLS Deflection)")
-
-        self.apex_limit_wind = LabeledEntry(
-            parent, "Apex dy limit (Wind)    span /", 180, "")
-        self.apex_limit_wind.pack(fill="x", **pad)
-        self.apex_limit_wind.bind_change(self._on_design_input_change)
-
-        self.apex_limit_eq = LabeledEntry(
-            parent, "Apex dy limit (EQ)      span /", 360, "")
-        self.apex_limit_eq.pack(fill="x", **pad)
-        self.apex_limit_eq.bind_change(self._on_design_input_change)
-
-        self.drift_limit_wind = LabeledEntry(
-            parent, "Eave drift limit (Wind) h /", 150, "")
-        self.drift_limit_wind.pack(fill="x", **pad)
-        self.drift_limit_wind.bind_change(self._on_design_input_change)
-
-        self.drift_limit_eq = LabeledEntry(
-            parent, "Eave drift limit (EQ)   h /", 300, "")
-        self.drift_limit_eq.pack(fill="x", **pad)
-        self.drift_limit_eq.bind_change(self._on_design_input_change)
-
-        self._section_header(parent, "SUPPORTS")
-
-        sup_frame = tk.Frame(parent, bg=COLORS["bg_panel"])
-        sup_frame.pack(fill="x", **pad)
-
-        tk.Label(sup_frame, text="Left Base", font=FONT, fg=COLORS["fg"],
-                 bg=COLORS["bg_panel"]).grid(row=0, column=0, sticky="w")
-        self.left_support = tk.StringVar(value="pinned")
-        tk.Radiobutton(sup_frame, text="Pinned", variable=self.left_support,
-                        value="pinned", font=FONT, fg=COLORS["fg"],
-                        bg=COLORS["bg_panel"], selectcolor=COLORS["bg_input"],
-                        activebackground=COLORS["bg_panel"],
-                        activeforeground=COLORS["fg"],
-                        command=self._update_preview
-                        ).grid(row=0, column=1, padx=(10, 4))
-        tk.Radiobutton(sup_frame, text="Fixed", variable=self.left_support,
-                        value="fixed", font=FONT, fg=COLORS["fg"],
-                        bg=COLORS["bg_panel"], selectcolor=COLORS["bg_input"],
-                        activebackground=COLORS["bg_panel"],
-                        activeforeground=COLORS["fg"],
-                        command=self._update_preview
-                        ).grid(row=0, column=2)
-
-        tk.Label(sup_frame, text="Right Base", font=FONT, fg=COLORS["fg"],
-                 bg=COLORS["bg_panel"]).grid(row=1, column=0, sticky="w", pady=(4, 0))
-        self.right_support = tk.StringVar(value="pinned")
-        tk.Radiobutton(sup_frame, text="Pinned", variable=self.right_support,
-                        value="pinned", font=FONT, fg=COLORS["fg"],
-                        bg=COLORS["bg_panel"], selectcolor=COLORS["bg_input"],
-                        activebackground=COLORS["bg_panel"],
-                        activeforeground=COLORS["fg"],
-                        command=self._update_preview
-                        ).grid(row=1, column=1, padx=(10, 4), pady=(4, 0))
-        tk.Radiobutton(sup_frame, text="Fixed", variable=self.right_support,
-                        value="fixed", font=FONT, fg=COLORS["fg"],
-                        bg=COLORS["bg_panel"], selectcolor=COLORS["bg_input"],
-                        activebackground=COLORS["bg_panel"],
-                        activeforeground=COLORS["fg"],
-                        command=self._update_preview
-                        ).grid(row=1, column=2, pady=(4, 0))
-
-        self._section_header(parent, "LOADS  (unfactored, kPa)")
-
-        self.dead_roof = LabeledEntry(parent, "Dead Load - Roof (SDL)", 0.15, "kPa")
-        self.dead_roof.pack(fill="x", **pad)
-        self.dead_roof.bind_change(self._on_frame_change)
-
-        self.dead_wall = LabeledEntry(parent, "Dead Load - Wall", 0.10, "kPa")
-        self.dead_wall.pack(fill="x", **pad)
-        self.dead_wall.bind_change(self._on_frame_change)
-
-        self.live_roof = LabeledEntry(parent, "Live Load - Roof (Q)", 0.25, "kPa")
-        self.live_roof.pack(fill="x", **pad)
-        self.live_roof.bind_change(self._on_frame_change)
-
-        self.self_weight_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(
-            parent, text="Include self-weight in Dead Load case",
-            variable=self.self_weight_var, font=FONT,
-            fg=COLORS["fg"], bg=COLORS["bg_panel"],
-            selectcolor=COLORS["bg_input"],
-            activebackground=COLORS["bg_panel"],
-            activeforeground=COLORS["fg"],
-            command=self._on_frame_change
-        ).pack(fill="x", padx=10, pady=(0, 4))
-
-    def _on_frame_change(self, *_):
-        """Geometry or dead load changed — update preview and EQ results."""
-        self._update_preview()
-        self._update_eq_results()
-
-    def _on_section_change(self, *_):
-        """Section selection changed — update info display and EQ results."""
-        self._invalidate_analysis()
-        self._update_section_info()
-        self._update_eq_results()
-
-    def _on_design_input_change(self, *_):
-        """Effective length changed — invalidate stale design checks."""
-        self._invalidate_analysis()
-
-    def _on_roof_type_change(self, *_):
-        if self.roof_type_var.get() == "mono":
-            self.pitch2_frame.pack_forget()
-            self.pitch_warning_label.pack_forget()
-        else:
-            # Re-pack after pitch1 widget to maintain correct order
-            self.pitch2_frame.pack(fill="x", padx=10, pady=(0, 2), after=self.pitch)
-            self.pitch_warning_label.pack(fill="x", padx=10, pady=(0, 2), after=self.pitch2_frame)
-        self._check_pitch_warnings()
-        self._update_preview()
-        self._update_eq_results()
-
-    def _on_pitch_change(self, *_):
-        self._check_pitch_warnings()
-        self._update_preview()
-        self._update_eq_results()
-
-    def _check_pitch_warnings(self):
-        from portal_frame.models.validation import validate_geometry_pitch
-        geom = self._build_geometry()
-        warnings = validate_geometry_pitch(geom)
-        if warnings:
-            self.pitch_warning_label.config(text="\n".join(warnings))
-        else:
-            self.pitch_warning_label.config(text="")
-
-    def _build_geometry(self) -> PortalFrameGeometry:
-        crane_rail_height = None
-        if hasattr(self, 'crane_enabled_var') and self.crane_enabled_var.get():
-            crane_rail_height = self.crane_rail_height.get()
-
-        if self.roof_type_var.get() == "mono":
-            return PortalFrameGeometry(
-                span=self.span.get(),
-                eave_height=self.eave.get(),
-                roof_pitch=self.pitch.get(),
-                bay_spacing=self.bay.get(),
-                roof_type="mono",
-                crane_rail_height=crane_rail_height,
-            )
-        return PortalFrameGeometry(
-            span=self.span.get(),
-            eave_height=self.eave.get(),
-            roof_pitch=self.pitch.get(),
-            bay_spacing=self.bay.get(),
-            roof_type="gable",
-            roof_pitch_2=self.pitch2.get(),
-            crane_rail_height=crane_rail_height,
-        )
+    def _build_geometry(self):
+        return build_geometry(self)
 
     # ── Wind Tab ──
 
