@@ -10,6 +10,7 @@ from portal_frame.gui.theme import COLORS, FONT, FONT_BOLD, FONT_TITLE, FONT_SMA
 from portal_frame.gui.widgets import LabeledEntry, LabeledCombo
 from portal_frame.gui.preview import FramePreview
 from portal_frame.gui.dialogs import WindSurfacePanel
+from portal_frame.gui.tabs.combos_tab import build_combos_tab
 
 from portal_frame.io.section_library import load_all_sections
 from portal_frame.models.geometry import PortalFrameGeometry
@@ -119,7 +120,7 @@ class PortalFrameApp(tk.Tk):
         self._build_wind_tab(self._tab_pages["Wind"])
         self._build_earthquake_tab(self._tab_pages["Earthquake"])
         self._build_crane_tab(self._tab_pages["Crane"])
-        self._build_combos_tab(self._tab_pages["Combos"])
+        build_combos_tab(self, self._tab_pages["Combos"])
 
         self._select_tab("Frame")
 
@@ -1070,27 +1071,6 @@ class PortalFrameApp(tk.Tk):
             row_frame.destroy()
 
     # ── Combos Tab ──
-
-    def _build_combos_tab(self, parent):
-        self._section_header(parent, "LOAD COMBINATIONS  (AS/NZS 1170.0:2002)")
-
-        combo_text = (
-            "ULS-1: 1.35G              (101+)\n"
-            "ULS-2: 1.2G + 1.5Q\n"
-            "ULS-n: 1.2G + Wu  (per wind case)\n"
-            "ULS-n: 0.9G + Wu  (per wind case)\n"
-            "ULS-n: 1.0G + E+  (if EQ enabled)\n"
-            "ULS-n: 1.0G + E-  (if EQ enabled)\n"
-            "SLS-1: G + 0.7Q           (201+)\n"
-            "SLS-2: G\n"
-            "SLS-n: G + Ws  (per wind case)\n"
-            "SLS-n: G + E(s)  (if EQ enabled)\n\n"
-            "Table 4.1 roof factors: psi_s=0.7, psi_l=0.0, psi_c=0.0\n"
-            "EQ combo: G factor = 1.0 (not 1.2), Q drops out (psi_c=0)"
-        )
-        tk.Label(parent, text=combo_text, font=FONT_MONO, fg=COLORS["fg_dim"],
-                 bg=COLORS["bg_panel"], anchor="w", justify="left"
-                 ).pack(fill="x", padx=10, pady=(0, 12))
 
     # ── Helpers ──
 
