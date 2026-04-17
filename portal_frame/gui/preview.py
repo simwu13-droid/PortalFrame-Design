@@ -12,6 +12,11 @@ from portal_frame.gui.canvas.interaction import (
     set_diagram_type as _set_diagram_type_fn,
     SCALE_KEYMAP as _SCALE_KEYMAP,
 )
+from portal_frame.gui.canvas.labels import (
+    _envelope_label_parts,
+    make_draggable, drag_start, drag_move, drag_end,
+    create_label, create_boxed_draggable_label, resolve_overlaps,
+)
 
 
 DIAGRAM_COLORS = {
@@ -30,12 +35,6 @@ _DIAGRAM_LABEL_EXTRA = 12
 # HUD display letter for each diagram type (user-facing, matches keyboard shortcut)
 _HUD_DISPLAY_LETTER = {"M": "M", "V": "S", "N": "N", "D": "D", "F": "F"}
 
-
-def _envelope_label_parts(is_envelope: bool, is_min: bool) -> tuple[str, str]:
-    """Return (text_prefix, label_key_suffix) for envelope max/min peak labels."""
-    if not is_envelope:
-        return "", ""
-    return ("min: ", "_min") if is_min else ("max: ", "")
 
 
 class FramePreview(tk.Canvas):
@@ -263,74 +262,21 @@ class FramePreview(tk.Canvas):
     # ── Draggable label infrastructure ──
 
     def _make_draggable(self, item_id, label_key):
-        """Bind drag events to a canvas text item."""
-        self.tag_bind(item_id, "<ButtonPress-1>", lambda e: self._drag_start(e, item_id, label_key))
-        self.tag_bind(item_id, "<B1-Motion>", self._drag_move)
-        self.tag_bind(item_id, "<ButtonRelease-1>", self._drag_end)
-        self.tag_bind(item_id, "<Enter>", lambda e: self.config(cursor="fleur"))
-        self.tag_bind(item_id, "<Leave>", lambda e: self.config(cursor=""))
+        make_draggable(self, item_id, label_key)
 
     def _drag_start(self, event, item_id, label_key):
-        self._drag_item = item_id
-        self._drag_label_key = label_key
-        ix, iy = self.coords(item_id)
-        self._drag_offset = (event.x - ix, event.y - iy)
+        drag_start(self, event, item_id, label_key)
 
     def _drag_move(self, event):
-        if self._drag_item is None:
-            return
-        w = self.winfo_width()
-        h = self.winfo_height()
-        # Clamp within canvas
-        nx = max(5, min(event.x - self._drag_offset[0], w - 5))
-        ny = max(5, min(event.y - self._drag_offset[1], h - 5))
-        # Compute delta from the current position so partners move by the
-        # same amount (can't just set their coords — they may be rects
-        # with 4-tuple geometry rather than 2-tuple like text items).
-        old_x, old_y = self.coords(self._drag_item)
-        self.coords(self._drag_item, nx, ny)
-        dx = nx - old_x
-        dy = ny - old_y
-        for partner in self._label_partners.get(self._drag_item, ()):
-            self.move(partner, dx, dy)
+        drag_move(self, event)
 
     def _drag_end(self, event):
-        if self._drag_item is None:
-            return
-        # Store the user offset so it persists across redraws
-        cx, cy = self.coords(self._drag_item)
-        key = self._drag_label_key
-        if key and key in self._label_positions:
-            ox, oy = self._label_positions[key]
-            self._label_offsets[key] = (cx - ox, cy - oy)
-        self._drag_item = None
+        drag_end(self, event)
 
     def _create_label(self, x, y, text, label_key, fill=None, font=None,
                       anchor="center", justify="center"):
-        """Create a text label that is draggable and tracked for collision."""
-        if fill is None:
-            fill = COLORS["fg_dim"]
-        if font is None:
-            font = FONT_SMALL
-
-        # Apply user offset if they previously dragged this label
-        ux, uy = self._label_offsets.get(label_key, (0, 0))
-        fx, fy = x + ux, y + uy
-
-        # Clamp within canvas
-        w = self.winfo_width()
-        h = self.winfo_height()
-        fx = max(5, min(fx, w - 5))
-        fy = max(8, min(fy, h - 8))
-
-        item = self.create_text(fx, fy, text=text, fill=fill, font=font,
-                                anchor=anchor, justify=justify, tags=("label",))
-        self._make_draggable(item, label_key)
-        # Store original (un-offset) position for drag delta calculation
-        self._label_positions[label_key] = (x, y)
-        self._label_items.append(item)
-        self._item_to_key[item] = label_key
-        return item
+        return create_label(self, x, y, text, label_key, fill=fill, font=font,
+                            anchor=anchor, justify=justify)
 
     def _create_boxed_draggable_label(
         self, x: float, y: float, text: str, label_key: str,
@@ -338,120 +284,12 @@ class FramePreview(tk.Canvas):
         bg: str | None = None, anchor: str = "center",
         bbox_pad: int = 3,
     ) -> int:
-        """Create a text label with a background rect that drags as a unit.
-
-        Uses the existing `_create_label` infrastructure for the text item
-        (so offsets persist across redraws), then draws a background rect
-        around the final text position and registers the rect as a
-        "partner" of the text so dragging either piece moves both.
-
-        Also binds drag handlers on the rect so clicking the rect
-        initiates a drag of the text (with the partner following).
-
-        Returns the text item id.
-        """
-        if outline is None:
-            outline = fg
-        if bg is None:
-            bg = COLORS["canvas_bg"]
-
-        text_id = self._create_label(
-            x, y, text, label_key, fill=fg, anchor=anchor)
-
-        # bbox() needs the item to be laid out — update_idletasks not
-        # required since create_text is immediate, but bbox may be None
-        # for very early draws with unmapped canvases. Guard for safety.
-        bb = self.bbox(text_id)
-        if bb is None:
-            return text_id
-        rect_id = self.create_rectangle(
-            bb[0] - bbox_pad, bb[1] - bbox_pad,
-            bb[2] + bbox_pad, bb[3] + bbox_pad,
-            fill=bg, outline=outline, width=1,
-            tags=("label", "label_bg"),
-        )
-        # Text must stay above its own background rect. Raise the text
-        # explicitly after creating the rect (the rect was just drawn
-        # so it's currently on top by default).
-        self.tag_raise(text_id)
-
-        # Register rect as a partner that moves with the text.
-        self._label_partners.setdefault(text_id, []).append(rect_id)
-
-        # Clicking the rect border should also start a drag of the text.
-        self.tag_bind(rect_id, "<ButtonPress-1>",
-            lambda e, tid=text_id, key=label_key: self._drag_start(e, tid, key))
-        self.tag_bind(rect_id, "<B1-Motion>", self._drag_move)
-        self.tag_bind(rect_id, "<ButtonRelease-1>", self._drag_end)
-        self.tag_bind(rect_id, "<Enter>", lambda e: self.config(cursor="fleur"))
-        self.tag_bind(rect_id, "<Leave>", lambda e: self.config(cursor=""))
-
-        return text_id
+        return create_boxed_draggable_label(self, x, y, text, label_key,
+                                            fg=fg, outline=outline, bg=bg,
+                                            anchor=anchor, bbox_pad=bbox_pad)
 
     def _resolve_overlaps(self):
-        """Nudge auto-placed labels that overlap. User-dragged labels are not moved."""
-        self.update_idletasks()  # ensure bbox() returns valid geometry
-        for _ in range(self.NUDGE_MAX_PASSES):
-            moved = False
-            items = list(self._label_items)
-            bboxes = {}
-            for item in items:
-                bb = self.bbox(item)
-                if bb:
-                    bboxes[item] = bb
-
-            for i, a in enumerate(items):
-                if a not in bboxes:
-                    continue
-                ax1, ay1, ax2, ay2 = bboxes[a]
-                p = self.LABEL_PAD
-                for b in items[i+1:]:
-                    if b not in bboxes:
-                        continue
-                    # Skip nudging labels the user has manually dragged
-                    b_key = self._item_to_key.get(b)
-                    if b_key and b_key in self._label_offsets:
-                        continue
-                    bx1, by1, bx2, by2 = bboxes[b]
-                    if (ax1 - p < bx2 + p and ax2 + p > bx1 - p and
-                            ay1 - p < by2 + p and ay2 + p > by1 - p):
-                        cx_a = (ax1 + ax2) / 2
-                        cy_a = (ay1 + ay2) / 2
-                        cx_b = (bx1 + bx2) / 2
-                        cy_b = (by1 + by2) / 2
-                        dx = cx_b - cx_a
-                        dy = cy_b - cy_a
-                        dist = math.hypot(dx, dy)
-                        if dist < 1:
-                            dx, dy = 0, 1
-                            dist = 1
-                        nx = dx / dist * self.NUDGE_STEP
-                        ny = dy / dist * self.NUDGE_STEP
-                        self.move(b, nx, ny)
-                        bboxes[b] = self.bbox(b)
-                        moved = True
-            if not moved:
-                break
-        # Final clamp: ensure all labels stay within canvas
-        w = self.winfo_width()
-        h = self.winfo_height()
-        for item in self._label_items:
-            bb = self.bbox(item)
-            if not bb:
-                continue
-            x1, y1, x2, y2 = bb
-            shift_x = 0
-            shift_y = 0
-            if x1 < 2:
-                shift_x = 2 - x1
-            elif x2 > w - 2:
-                shift_x = (w - 2) - x2
-            if y1 < 2:
-                shift_y = 2 - y1
-            elif y2 > h - 2:
-                shift_y = (h - 2) - y2
-            if shift_x or shift_y:
-                self.move(item, shift_x, shift_y)
+        resolve_overlaps(self)
 
     # ── Main draw ──
 
