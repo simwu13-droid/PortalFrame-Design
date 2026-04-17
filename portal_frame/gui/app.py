@@ -1,7 +1,7 @@
 """Main application window — tab orchestration and generate flow."""
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk
 import os
 
 from portal_frame.gui.theme import COLORS, FONT, FONT_BOLD, FONT_TITLE, FONT_SMALL, FONT_MONO
@@ -27,9 +27,8 @@ from portal_frame.gui.tabs.earthquake_tab import (
 
 from portal_frame.io.section_library import load_all_sections
 from portal_frame.models.geometry import PortalFrameGeometry
-from portal_frame.models.loads import LoadInput, EarthquakeInputs
+from portal_frame.models.loads import EarthquakeInputs
 from portal_frame.standards.earthquake_nzs1170_5 import calculate_earthquake_forces
-from portal_frame.models.supports import SupportCondition
 from portal_frame.gui.wind_generator import (
     auto_generate_wind_cases, synthesize_wind_cases,
     get_h_and_depth, get_wind_params,
@@ -38,8 +37,9 @@ from portal_frame.gui.persistence import (
     save_config, load_config, open_recent, update_recent_menu,
     on_close, auto_restore,
 )
-from portal_frame.solvers.base import AnalysisRequest
-from portal_frame.solvers.spacegass import SpaceGassSolver
+from portal_frame.gui.analysis_runner import (
+    generate, analyse, invalidate_analysis, group_design_checks_by_member,
+)
 
 
 class PortalFrameApp(tk.Tk):
@@ -434,7 +434,7 @@ class PortalFrameApp(tk.Tk):
                 self.diagram_case_var.get() != "(none)"):
             diagram = self._build_diagram_data()
 
-        self.preview.set_design_checks(self._bucket_design_checks())
+        self.preview.set_design_checks(self._group_design_checks_by_member())
         self.preview.set_sls_checks(
             self._analysis_output.sls_checks if self._analysis_output else None
         )
@@ -678,410 +678,17 @@ class PortalFrameApp(tk.Tk):
                  f"Ridge: {ridge:.2f}m  |  {pitch_info}"
         )
 
-    def _build_analysis_request(self):
-        """Collect all GUI inputs and return an AnalysisRequest."""
-        col_name = self.col_section.get()
-        raf_name = self.raf_section.get()
-
-        if not col_name or col_name not in self.section_library:
-            raise ValueError("Please select a valid column section.")
-        if not raf_name or raf_name not in self.section_library:
-            raise ValueError("Please select a valid rafter section.")
-
-        col_sec = self.section_library[col_name]
-        raf_sec = self.section_library[raf_name]
-
-        geom = self._build_geometry()
-
-        supports = SupportCondition(
-            left_base=self.left_support.get(),
-            right_base=self.right_support.get(),
-        )
-
-        wind_cases = self._synthesize_wind_cases()
-
-        qu_val = self.qu.get()
-        qs_val = self.qs.get()
-        ws_factor = qs_val / qu_val if qu_val > 0 else 0.75
-
-        earthquake = None
-        if self.eq_enabled_var.get():
-            t1_val = self.eq_T1_override.get()
-            earthquake = EarthquakeInputs(
-                Z=self.eq_Z.get(),
-                soil_class=self.eq_soil.get(),
-                R_uls=self.eq_R_uls.get(),
-                R_sls=self.eq_R_sls.get(),
-                mu=self.eq_mu.get(),
-                Sp=self.eq_Sp.get(),
-                Sp_sls=self.eq_Sp_sls.get(),
-                near_fault=self.eq_near_fault.get(),
-                extra_seismic_mass=self.eq_extra_mass.get(),
-                T1_override=t1_val if t1_val > 0 else 0.0,
-            )
-
-        crane_inputs = None
-        if self.crane_enabled_var.get():
-            from portal_frame.models.crane import CraneTransverseCombo, CraneInputs
-            hc_uls = []
-            for _, name_var, left_var, right_var in self.crane_hc_uls_rows:
-                try:
-                    hc_uls.append(CraneTransverseCombo(
-                        name=name_var.get(),
-                        left=float(left_var.get()),
-                        right=float(right_var.get()),
-                    ))
-                except ValueError:
-                    pass
-            hc_sls = []
-            for _, name_var, left_var, right_var in self.crane_hc_sls_rows:
-                try:
-                    hc_sls.append(CraneTransverseCombo(
-                        name=name_var.get(),
-                        left=float(left_var.get()),
-                        right=float(right_var.get()),
-                    ))
-                except ValueError:
-                    pass
-            crane_inputs = CraneInputs(
-                rail_height=self.crane_rail_height.get(),
-                dead_left=self.crane_gc_left.get(),
-                dead_right=self.crane_gc_right.get(),
-                live_left=self.crane_qc_left.get(),
-                live_right=self.crane_qc_right.get(),
-                transverse_uls=hc_uls,
-                transverse_sls=hc_sls,
-            )
-
-        loads = LoadInput(
-            dead_load_roof=self.dead_roof.get(),
-            dead_load_wall=self.dead_wall.get(),
-            live_load_roof=self.live_roof.get(),
-            wind_cases=wind_cases,
-            include_self_weight=self.self_weight_var.get(),
-            ws_factor=ws_factor,
-            earthquake=earthquake,
-            crane=crane_inputs,
-        )
-
-        topology = geom.to_topology()
-
-        return AnalysisRequest(
-            topology=topology,
-            column_section=col_sec,
-            rafter_section=raf_sec,
-            supports=supports,
-            load_input=loads,
-            span=geom.span,
-            eave_height=geom.eave_height,
-            roof_pitch=geom.roof_pitch,
-            bay_spacing=geom.bay_spacing,
-        )
-
     def _generate(self):
-        """Collect all inputs and generate the SpaceGass file via solver interface."""
-        try:
-            request = self._build_analysis_request()
-            geom = self._build_geometry()
-
-            solver = SpaceGassSolver()
-            solver.build_model(request)
-            output = solver.generate_text()
-
-            default_name = f"portal_{geom.span:.0f}m_{geom.roof_pitch:.0f}deg.txt"
-            filepath = filedialog.asksaveasfilename(
-                title="Save SpaceGass File",
-                defaultextension=".txt",
-                filetypes=[("SpaceGass Text", "*.txt"), ("All Files", "*.*")],
-                initialfile=default_name,
-            )
-
-            if filepath:
-                with open(filepath, "w") as f:
-                    f.write(output)
-                self.status_label.config(
-                    text=f"Saved: {os.path.basename(filepath)}",
-                    fg=COLORS["success"]
-                )
-
-        except Exception as e:
-            messagebox.showerror("Generation Error", str(e))
-            self.status_label.config(text=f"Error: {e}", fg=COLORS["error"])
+        generate(self)
 
     def _analyse(self):
-        """Run PyNite analysis on current inputs."""
-        try:
-            # Clear any stale results first — if solve fails mid-way, we won't
-            # leave old results visible.
-            self._invalidate_analysis()
-            request = self._build_analysis_request()
-            self._analysis_topology = request.topology
-
-            from portal_frame.solvers.pynite_solver import PyNiteSolver
-            solver = PyNiteSolver()
-            solver.build_model(request)
-
-            self.status_label.config(text="Analysing...", fg=COLORS["warning"])
-            self.update_idletasks()
-
-            solver.solve()
-
-            self._analysis_output = solver.output
-            self._run_design_checks()
-            self._update_results_panel()
-            self._update_diagram_dropdowns()
-            self._draw_preview()
-
-            self.status_label.config(
-                text="Analysis complete", fg=COLORS["success"]
-            )
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            messagebox.showerror("Analysis Error", str(e))
-            self.status_label.config(text=f"Analysis error: {e}", fg=COLORS["error"])
-
-    def _bucket_design_checks(self) -> dict | None:
-        """Group design checks into canvas-line buckets for the preview overlay.
-
-        Returns a dict with keys "col_L", "col_R", "raf_L", "raf_R" (mono
-        omits "raf_R") whose values are the worst-utilisation
-        MemberDesignCheck for each canvas line, or None if no checks exist.
-
-        Crane-bracket sub-members and any other split members are collapsed
-        into the parent line via worst-case utilisation.
-        """
-        out = self._analysis_output
-        if out is None or not out.design_checks:
-            return None
-        topo = self._analysis_topology
-        if topo is None:
-            return None
-
-        # Resolve span to determine which side each member belongs to
-        try:
-            span = self.span.get()
-        except Exception:
-            return None
-        if span <= 0:
-            return None
-        eps = 1e-3 * max(span, 1.0)
-
-        groups: dict[str, object] = {}
-
-        def _consider(key: str, chk):
-            existing = groups.get(key)
-            if existing is None:
-                groups[key] = chk
-                return
-            # Worst (highest util) wins; NO_DATA is treated as -inf so any
-            # actual check supersedes it. Use max of (combined, shear) so
-            # shear-dominated members can win their bucket.
-            def rank(c):
-                if c.status == "NO_DATA":
-                    return -1.0
-                return max(c.util_combined, c.util_shear)
-            if rank(chk) > rank(existing):
-                groups[key] = chk
-
-        for chk in out.design_checks:
-            member = topo.members.get(chk.member_id)
-            if member is None:
-                continue
-            n_start = topo.nodes[member.node_start]
-            n_end = topo.nodes[member.node_end]
-            xs = [n_start.x, n_end.x]
-            x_min = min(xs)
-            x_max = max(xs)
-
-            if chk.member_role == "col":
-                if x_max <= eps:
-                    _consider("col_L", chk)
-                elif x_min >= span - eps:
-                    _consider("col_R", chk)
-                else:
-                    # Unexpected column orientation — skip (shouldn't happen)
-                    pass
-            else:  # rafter
-                # Left rafter: starts at left eave (x≈0), ends at apex (x<span)
-                # Right rafter: starts at apex, ends at right eave (x≈span)
-                # Mono: single rafter spanning x=0 to x=span -> "raf_L"
-                if x_min <= eps and x_max < span - eps:
-                    _consider("raf_L", chk)
-                elif x_min > eps and x_max >= span - eps:
-                    _consider("raf_R", chk)
-                else:
-                    # Mono full-span rafter, or unusual case — bucket as raf_L
-                    _consider("raf_L", chk)
-
-        return groups
-
-    def _run_design_checks(self):
-        """Run AS/NZS 4600 capacity checks on the current analysis output.
-
-        Looks up section capacities from the Formsteel span table at the
-        user-supplied effective lengths, then writes a list of
-        MemberDesignCheck onto self._analysis_output.design_checks.
-        """
-        out = self._analysis_output
-        if out is None or out.uls_envelope_curves is None:
-            return
-        if self._analysis_topology is None:
-            return
-
-        from portal_frame.standards.cfs_check import check_all_members
-        from portal_frame.standards.serviceability import (
-            check_apex_deflection, check_eave_drift,
-        )
-
-        col_name = self.col_section.get()
-        raf_name = self.raf_section.get()
-        col_sec = self.section_library.get(col_name)
-        raf_sec = self.section_library.get(raf_name)
-        if col_sec is None or raf_sec is None:
-            return
-
-        out.design_checks = check_all_members(
-            topology=self._analysis_topology,
-            envelope_curves=out.uls_envelope_curves,
-            column_section=col_sec,
-            rafter_section=raf_sec,
-            L_col=self.col_Le.get(),
-            L_raf=self.raf_Le.get(),
-            combo_results=out.combo_results,
-        )
-
-        apex_checks = check_apex_deflection(
-            topology=self._analysis_topology,
-            combo_results=out.combo_results,
-            combo_descriptions=out.combo_descriptions,
-            limit_ratio_wind=int(round(self.apex_limit_wind.get())),
-            limit_ratio_eq=int(round(self.apex_limit_eq.get())),
-        )
-        drift_checks = check_eave_drift(
-            topology=self._analysis_topology,
-            combo_results=out.combo_results,
-            combo_descriptions=out.combo_descriptions,
-            limit_ratio_wind=int(round(self.drift_limit_wind.get())),
-            limit_ratio_eq=int(round(self.drift_limit_eq.get())),
-        )
-        out.sls_checks = apex_checks + drift_checks
+        analyse(self)
 
     def _invalidate_analysis(self):
-        """Clear stale analysis results when inputs change.
+        invalidate_analysis(self)
 
-        Called from input change callbacks to prevent the user from mistakenly
-        applying outdated analysis results to design.
-        """
-        self._analysis_output = None
-        self._analysis_topology = None
-        if hasattr(self, '_results_text'):
-            self._results_text.config(state="normal")
-            self._results_text.delete("1.0", "end")
-            self._results_text.config(state="disabled")
-        if hasattr(self, 'diagram_case_var'):
-            self.diagram_case_var.set("(none)")
-        if hasattr(self, 'diagram_case_combo'):
-            self.diagram_case_combo["values"] = ["(none)"]
-        if hasattr(self, '_diagram_display_to_name'):
-            self._diagram_display_to_name = {"(none)": None}
-        # Clear the green "Analysis complete" status message
-        if hasattr(self, 'status_label'):
-            self.status_label.config(text="", fg=COLORS["fg_dim"])
-
-    def _update_results_panel(self):
-        """Display envelope results and design checks in the summary widget."""
-        out = self._analysis_output
-        if out is None:
-            return
-
-        lines = []
-        if out.uls_envelope:
-            lines.append("ULS Envelope:")
-            for key, label in [("max_moment", "Max M+"), ("min_moment", "Max M-"),
-                               ("max_shear", "Max V"), ("min_axial", "Max N(c)")]:
-                if key in out.uls_envelope:
-                    e = out.uls_envelope[key]
-                    unit = "kNm" if "moment" in key else "kN"
-                    lines.append(f"  {label:8s} = {e.value:>8.1f} {unit}  "
-                                 f"({e.combo_name})  M{e.member_id} @ {e.position_pct:.0f}%")
-
-        if out.sls_envelope:
-            lines.append("SLS Envelope:")
-            for key, label in [("max_dy", "Max dy"), ("max_dx", "Max dx")]:
-                if key in out.sls_envelope:
-                    e = out.sls_envelope[key]
-                    lines.append(f"  {label:8s} = {e.value:>8.1f} mm   "
-                                 f"({e.combo_name})")
-
-        # Design check block — appended below envelopes
-        fail_lines: list[int] = []   # 0-based line indices to highlight red
-        nodata_lines: list[int] = []
-        if out.design_checks:
-            lines.append("Design Check (AS/NZS 4600):")
-            for chk in out.design_checks:
-                if chk.status == "NO_DATA":
-                    line = (
-                        f"  M{chk.member_id} ({chk.member_role}) {chk.section_name:12s}"
-                        f"  L={chk.L_eff:.1f}m  NO DATA"
-                    )
-                    nodata_lines.append(len(lines))
-                else:
-                    line = (
-                        f"  M{chk.member_id} ({chk.member_role}) {chk.section_name:12s}"
-                        f"  L={chk.L_eff:.1f}m"
-                        f"  N/\u03c6N={chk.util_axial:.2f}"
-                        f"  M/\u03c6Mb={chk.util_bending:.2f}"
-                        f"  V/\u03c6V={chk.util_shear:.2f}"
-                        f"  \u03a3={chk.util_combined:.2f}  {chk.status}"
-                    )
-                    if chk.status == "FAIL":
-                        fail_lines.append(len(lines))
-                lines.append(line)
-
-        # SLS deflection rows — grouped by metric (apex_dy, drift)
-        if out.sls_checks:
-            metric_labels = {
-                "apex_dy": ("Serviceability (Apex dy):", "\u03b4v"),
-                "drift":   ("Serviceability (Eave drift):", "\u03b4h"),
-            }
-            for metric, (header, symbol) in metric_labels.items():
-                metric_rows = [c for c in out.sls_checks if c.metric == metric]
-                if not metric_rows:
-                    continue
-                lines.append(header)
-                for slc in metric_rows:
-                    line = (
-                        f"  {slc.category.upper():4s}  "
-                        f"{symbol}={slc.deflection_mm:>7.1f}mm  "
-                        f"limit={slc.reference_symbol}/{slc.ratio} "
-                        f"({slc.limit_mm:.1f}mm)  "
-                        f"actual={slc.reference_symbol}/{slc.actual_ratio}  "
-                        f"util={slc.util:.2f}  {slc.status}  "
-                        f"({slc.controlling_combo})"
-                    )
-                    if slc.status == "FAIL":
-                        fail_lines.append(len(lines))
-                    lines.append(line)
-
-        # Auto-grow the text widget so all lines are visible
-        new_height = max(8, len(lines))
-        if int(self._results_text.cget("height")) != new_height:
-            self._results_text.config(height=new_height)
-
-        self._results_text.config(state="normal")
-        self._results_text.delete("1.0", "end")
-        self._results_text.insert("1.0", "\n".join(lines))
-
-        # Tag FAIL rows red and NO_DATA rows dim
-        self._results_text.tag_configure("dc_fail", foreground=COLORS["error"])
-        self._results_text.tag_configure("dc_nodata", foreground=COLORS["fg_dim"])
-        for ln in fail_lines:
-            self._results_text.tag_add("dc_fail", f"{ln+1}.0", f"{ln+1}.end")
-        for ln in nodata_lines:
-            self._results_text.tag_add("dc_nodata", f"{ln+1}.0", f"{ln+1}.end")
-
-        self._results_text.config(state="disabled")
+    def _group_design_checks_by_member(self) -> dict | None:
+        return group_design_checks_by_member(self)
 
     def _update_diagram_dropdowns(self):
         """Populate diagram case dropdown with analysis cases and combos.
