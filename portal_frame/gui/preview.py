@@ -4,6 +4,14 @@ import tkinter as tk
 import math
 
 from portal_frame.gui.theme import COLORS, FONT_SMALL
+from portal_frame.gui.canvas.interaction import (
+    on_resize, on_pan_start, on_pan_move, on_pan_end, on_wheel,
+    on_zoom_extents, on_key_press, on_key_release,
+    show_tooltip, hide_tooltip,
+    tx as _tx_fn,
+    set_diagram_type as _set_diagram_type_fn,
+    SCALE_KEYMAP as _SCALE_KEYMAP,
+)
 
 
 DIAGRAM_COLORS = {
@@ -18,15 +26,6 @@ DIAGRAM_MAX_PX = 60
 _DIAGRAM_PAD = 20
 _DIAGRAM_LABEL_EXTRA = 12
 
-# Keyboard shortcut -> diagram type for hold-and-scroll scaling.
-# Extend this dict to add custom shortcuts in the future.
-_SCALE_KEYMAP = {
-    "m": "M",   # Moment
-    "n": "N",   # Axial
-    "s": "V",   # Shear
-    "d": "D",   # Deflection (delta)
-    "f": "F",   # Load display
-}
 
 # HUD display letter for each diagram type (user-facing, matches keyboard shortcut)
 _HUD_DISPLAY_LETTER = {"M": "M", "V": "S", "N": "N", "D": "D", "F": "F"}
@@ -113,9 +112,8 @@ class FramePreview(tk.Canvas):
         self.bind("<KeyRelease>", self._on_key_release)
         self.bind("<Enter>", lambda e: self.focus_set())
 
-    def _on_resize(self, *_):
-        if self._geom:
-            self.update_frame(self._geom, self._supports, self._loads, self._diagram)
+    def _on_resize(self, *args):
+        on_resize(self, *args)
 
     def set_design_checks(self, groups: dict | None) -> None:
         """Receive bucketed ULS design-check results from app.py.
@@ -172,126 +170,38 @@ class FramePreview(tk.Canvas):
         worst = max(self._sls_checks, key=lambda c: c.util)
         return worst.util, worst.status
 
-    # ── Tooltip helpers ──
-
     def _show_tooltip(self, event, text: str) -> None:
-        """Draw a tooltip near the mouse cursor. Cleaned up on leave/redraw."""
-        self._hide_tooltip()
-        pad = 6
-        tid = self.create_text(
-            event.x + 12, event.y + 18,
-            text=text, fill=COLORS["fg_bright"],
-            font=FONT_SMALL, anchor="nw", tags=("hud_tooltip",))
-        bb = self.bbox(tid)
-        if bb:
-            self.create_rectangle(
-                bb[0] - pad, bb[1] - pad / 2,
-                bb[2] + pad, bb[3] + pad / 2,
-                fill=COLORS["hud_bg"], outline=COLORS["border"], width=1,
-                tags=("hud_tooltip",))
-            self.tag_raise(tid)
+        show_tooltip(self, event, text)
 
     def _hide_tooltip(self) -> None:
-        self.delete("hud_tooltip")
+        hide_tooltip(self)
 
     def tx(self, x, y):
-        """World coordinates -> screen coordinates using explicit view state."""
-        w = getattr(self, '_fake_w', None) or self.winfo_width()
-        h = getattr(self, '_fake_h', None) or self.winfo_height()
-        cx = w / 2.0
-        cy = h / 2.0
-        return (cx + (x - self._view_cx) * self._view_zoom,
-                cy - (y - self._view_cy) * self._view_zoom)
-
-    # ── Pan handlers ──
+        return _tx_fn(self, x, y)
 
     def _on_pan_start(self, event):
-        self._pan_start = (event.x, event.y)
-        self.config(cursor="fleur")
+        on_pan_start(self, event)
 
     def _on_pan_move(self, event):
-        if self._pan_start is None:
-            return
-        dx_px = event.x - self._pan_start[0]
-        dy_px = event.y - self._pan_start[1]
-        # Convert pixel delta to world delta (y is flipped: screen-down = world-up negative)
-        if self._view_zoom > 0:
-            self._view_cx -= dx_px / self._view_zoom
-            self._view_cy += dy_px / self._view_zoom
-        self._pan_start = (event.x, event.y)
-        if self._geom:
-            self.update_frame(self._geom, self._supports, self._loads, self._diagram)
+        on_pan_move(self, event)
 
     def _on_pan_end(self, event):
-        self._pan_start = None
-        self.config(cursor="")
-
-    # ── Zoom handler ──
+        on_pan_end(self, event)
 
     def _on_wheel(self, event):
-        """Mouse wheel: zoom (no modifier) or scale active diagram (held key)."""
-        scroll_up = event.delta > 0
-
-        # Held key -> scale the corresponding diagram type
-        if self._active_modifier is not None:
-            dtype = _SCALE_KEYMAP.get(self._active_modifier)
-            if dtype:
-                factor = 1.15 if scroll_up else (1.0 / 1.15)
-                self._diagram_scales[dtype] = max(0.1, min(10.0,
-                    self._diagram_scales[dtype] * factor))
-                if self._geom:
-                    self.update_frame(self._geom, self._supports, self._loads, self._diagram)
-                return
-
-        # No modifier -> zoom toward cursor
-        factor = 1.1 if scroll_up else (1.0 / 1.1)
-        new_zoom = self._view_zoom * factor
-
-        min_zoom = self._view_zoom_base * 0.1
-        max_zoom = self._view_zoom_base * 20.0
-        new_zoom = max(min_zoom, min(max_zoom, new_zoom))
-
-        if abs(new_zoom - self._view_zoom) < 1e-9:
-            return
-
-        # Keep the world point under the cursor fixed during zoom
-        w = self.winfo_width()
-        h = self.winfo_height()
-        cx, cy = w / 2.0, h / 2.0
-        wx = self._view_cx + (event.x - cx) / self._view_zoom
-        wy = self._view_cy - (event.y - cy) / self._view_zoom
-        self._view_cx = wx - (event.x - cx) / new_zoom
-        self._view_cy = wy + (event.y - cy) / new_zoom
-        self._view_zoom = new_zoom
-
-        if self._geom:
-            self.update_frame(self._geom, self._supports, self._loads, self._diagram)
+        on_wheel(self, event)
 
     def _on_zoom_extents(self, event):
-        """Double-click middle mouse: refit view to frame (Autodesk-style zoom extents).
-        Leaves diagram amplitude scales untouched."""
-        self._view_dirty = True
-        if self._geom:
-            self.update_frame(self._geom, self._supports, self._loads, self._diagram)
-
-    # ── Keyboard modifier tracking ──
+        on_zoom_extents(self, event)
 
     def _on_key_press(self, event):
-        key = event.keysym.lower()
-        if key in _SCALE_KEYMAP:
-            self._active_modifier = key
+        on_key_press(self, event)
 
     def _on_key_release(self, event):
-        key = event.keysym.lower()
-        if key == self._active_modifier:
-            self._active_modifier = None
+        on_key_release(self, event)
 
     def set_diagram_type(self, dtype: str):
-        """Called by app.py when the diagram type combobox changes.
-        Updates the active type so the HUD shows the correct letter."""
-        self._active_diagram_type = dtype
-        if self._geom:
-            self.update_frame(self._geom, self._supports, self._loads, self._diagram)
+        _set_diagram_type_fn(self, dtype)
 
     def _fit_to_window(self, geom, loads=None):
         """Compute view_cx, view_cy, view_zoom to fit the frame in the canvas.
