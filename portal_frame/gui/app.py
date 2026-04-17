@@ -2,7 +2,6 @@
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import json
 import os
 
 from portal_frame.gui.theme import COLORS, FONT, FONT_BOLD, FONT_TITLE, FONT_SMALL, FONT_MONO
@@ -34,15 +33,15 @@ from portal_frame.models.supports import SupportCondition
 from portal_frame.gui.wind_generator import (
     auto_generate_wind_cases, synthesize_wind_cases,
 )
+from portal_frame.gui.persistence import (
+    save_config, load_config, open_recent, update_recent_menu,
+    on_close, auto_restore,
+)
 from portal_frame.solvers.base import AnalysisRequest
 from portal_frame.solvers.spacegass import SpaceGassSolver
 
 
 class PortalFrameApp(tk.Tk):
-
-    _APP_DIR = os.path.join(os.path.expanduser("~"), ".portal_frame")
-    _RECENT_FILE = os.path.join(_APP_DIR, "recent.json")
-    _LAST_SESSION = os.path.join(_APP_DIR, "last_session.json")
 
     def __init__(self):
         super().__init__()
@@ -1209,327 +1208,20 @@ class PortalFrameApp(tk.Tk):
             result["data_dx"] = _extract(cr, "dx_local")
         return result
 
-    # ── Save / Load / Recent ──
-
-    def _collect_config(self) -> dict:
-        """Serialize all GUI state to a config dict."""
-        cfg = {"version": 1}
-
-        cfg["geometry"] = {
-            "span": self.span.get(),
-            "eave_height": self.eave.get(),
-            "roof_pitch": self.pitch.get(),
-            "roof_pitch_2": self.pitch2.get(),
-            "bay_spacing": self.bay.get(),
-            "roof_type": self.roof_type_var.get(),
-            "building_depth": self.building_depth.get(),
-        }
-        cfg["sections"] = {
-            "column": self.col_section.get(),
-            "rafter": self.raf_section.get(),
-            "col_Le": self.col_Le.get(),
-            "raf_Le": self.raf_Le.get(),
-        }
-        cfg["serviceability"] = {
-            "apex_wind_ratio": int(round(self.apex_limit_wind.get())),
-            "apex_eq_ratio": int(round(self.apex_limit_eq.get())),
-            "drift_wind_ratio": int(round(self.drift_limit_wind.get())),
-            "drift_eq_ratio": int(round(self.drift_limit_eq.get())),
-        }
-        cfg["supports"] = {
-            "left_base": self.left_support.get(),
-            "right_base": self.right_support.get(),
-        }
-        cfg["loads"] = {
-            "dead_load_roof": self.dead_roof.get(),
-            "dead_load_wall": self.dead_wall.get(),
-            "live_load_roof": self.live_roof.get(),
-            "include_self_weight": self.self_weight_var.get(),
-        }
-        cfg["wind"] = {
-            "qu": self.qu.get(),
-            "qs": self.qs.get(),
-            "kc_e": self.kc_e.get(),
-            "kc_i": self.kc_i.get(),
-            "cpi_uplift": float(self.cpi_uplift_var.get()),
-            "cpi_downward": float(self.cpi_downward_var.get()),
-            "windward_wall_cpe": float(self.cp_vars["cp_ww"].get()),
-        }
-        cfg["earthquake"] = {
-            "enabled": self.eq_enabled_var.get(),
-            "location": self.eq_location.get(),
-            "Z": self.eq_Z.get(),
-            "soil_class": self.eq_soil.get(),
-            "ductility": self.eq_ductility.get(),
-            "mu": self.eq_mu.get(),
-            "Sp": self.eq_Sp.get(),
-            "Sp_sls": self.eq_Sp_sls.get(),
-            "R_uls": self.eq_R_uls.get(),
-            "R_sls": self.eq_R_sls.get(),
-            "near_fault": self.eq_near_fault.get(),
-            "extra_mass": self.eq_extra_mass.get(),
-            "T1_override": self.eq_T1_override.get(),
-        }
-        cfg["crane"] = {
-            "enabled": self.crane_enabled_var.get(),
-            "rail_height": self.crane_rail_height.get(),
-            "gc_left": self.crane_gc_left.get(),
-            "gc_right": self.crane_gc_right.get(),
-            "qc_left": self.crane_qc_left.get(),
-            "qc_right": self.crane_qc_right.get(),
-            "transverse_uls": [],
-            "transverse_sls": [],
-        }
-        for _, nv, lv, rv in self.crane_hc_uls_rows:
-            try:
-                cfg["crane"]["transverse_uls"].append({
-                    "name": nv.get(),
-                    "left": float(lv.get()),
-                    "right": float(rv.get()),
-                })
-            except ValueError:
-                pass
-        for _, nv, lv, rv in self.crane_hc_sls_rows:
-            try:
-                cfg["crane"]["transverse_sls"].append({
-                    "name": nv.get(),
-                    "left": float(lv.get()),
-                    "right": float(rv.get()),
-                })
-            except ValueError:
-                pass
-        return cfg
-
-    def _apply_config(self, cfg: dict):
-        """Populate all GUI fields from a config dict."""
-        # Geometry — set roof type first (affects pitch2 visibility)
-        geo = cfg.get("geometry", {})
-        rt = geo.get("roof_type", "gable")
-        self.roof_type_var.set(rt)
-        self._on_roof_type_change()
-
-        self.span.set(geo.get("span", 12.0))
-        self.eave.set(geo.get("eave_height", 4.5))
-        self.pitch.set(geo.get("roof_pitch", 5.0))
-        self.pitch2.set(geo.get("roof_pitch_2", 5.0))
-        self.bay.set(geo.get("bay_spacing", 6.0))
-        self.building_depth.set(geo.get("building_depth", 24.0))
-
-        # Sections
-        sec = cfg.get("sections", {})
-        col = sec.get("column", "63020S2")
-        raf = sec.get("rafter", "650180295S2")
-        self.col_section.set(col)
-        self.raf_section.set(raf)
-        self.col_Le.set(sec.get("col_Le", 4.5))
-        self.raf_Le.set(sec.get("raf_Le", 6.0))
-        self._update_section_info()
-
-        # Serviceability limits
-        slsc = cfg.get("serviceability", {})
-        self.apex_limit_wind.set(slsc.get("apex_wind_ratio", 180))
-        self.apex_limit_eq.set(slsc.get("apex_eq_ratio", 360))
-        self.drift_limit_wind.set(slsc.get("drift_wind_ratio", 150))
-        self.drift_limit_eq.set(slsc.get("drift_eq_ratio", 300))
-
-        # Supports
-        sup = cfg.get("supports", {})
-        self.left_support.set(sup.get("left_base", "pinned"))
-        self.right_support.set(sup.get("right_base", "pinned"))
-
-        # Loads
-        ld = cfg.get("loads", {})
-        self.dead_roof.set(ld.get("dead_load_roof", 0.15))
-        self.dead_wall.set(ld.get("dead_load_wall", 0.10))
-        self.live_roof.set(ld.get("live_load_roof", 0.25))
-        self.self_weight_var.set(ld.get("include_self_weight", True))
-
-        # Wind
-        w = cfg.get("wind", {})
-        self.qu.set(w.get("qu", 1.2))
-        self.qs.set(w.get("qs", 0.9))
-        self.kc_e.set(w.get("kc_e", 0.8))
-        self.kc_i.set(w.get("kc_i", 1.0))
-        self.cpi_uplift_var.set(str(w.get("cpi_uplift", 0.2)))
-        self.cpi_downward_var.set(str(w.get("cpi_downward", -0.3)))
-        self.cp_vars["cp_ww"].set(str(w.get("windward_wall_cpe", 0.7)))
-
-        # Earthquake
-        eq = cfg.get("earthquake", {})
-        self.eq_enabled_var.set(eq.get("enabled", False))
-        # Set location first; trigger the callback so the fault-distance
-        # label + Z auto-fill run. We then override Z with the explicit
-        # saved value so an engineer's manual Z edits are preserved.
-        self.eq_location.set(eq.get("location", "Wellington"))
-        self._on_eq_location_change()
-        self.eq_Z.set(eq.get("Z", 0.40))
-        self.eq_soil.set(eq.get("soil_class", "C"))
-        # Same pattern for ductility: set preset, fire auto-fill, then
-        # override mu/Sp with the explicit saved values.
-        self.eq_ductility.set(eq.get(
-            "ductility", "Nominally ductile (mu=1.25, Sp=0.925)"))
-        self._on_ductility_change()
-        self.eq_mu.set(eq.get("mu", 1.25))
-        self.eq_Sp.set(eq.get("Sp", 0.925))
-        self.eq_Sp_sls.set(eq.get("Sp_sls", 0.7))
-        self.eq_R_uls.set(eq.get("R_uls", 1.0))
-        self.eq_R_sls.set(eq.get("R_sls", 0.25))
-        self.eq_near_fault.set(eq.get("near_fault", 1.0))
-        self.eq_extra_mass.set(eq.get("extra_mass", 0.0))
-        self.eq_T1_override.set(eq.get("T1_override", 0.0))
-        self._on_eq_toggle()
-
-        # Crane
-        cr = cfg.get("crane", {})
-        self.crane_enabled_var.set(cr.get("enabled", False))
-        self.crane_rail_height.set(cr.get("rail_height", 3.0))
-        self.crane_gc_left.set(cr.get("gc_left", 0.0))
-        self.crane_gc_right.set(cr.get("gc_right", 0.0))
-        self.crane_qc_left.set(cr.get("qc_left", 0.0))
-        self.crane_qc_right.set(cr.get("qc_right", 0.0))
-
-        # Clear existing transverse rows and rebuild
-        while self.crane_hc_uls_rows:
-            self._remove_crane_hc_row(self.crane_hc_uls_rows)
-        while self.crane_hc_sls_rows:
-            self._remove_crane_hc_row(self.crane_hc_sls_rows)
-
-        for row_data in cr.get("transverse_uls", []):
-            self._add_crane_hc_row(
-                self.crane_hc_uls_frame, self.crane_hc_uls_rows,
-                "Hc", len(self.crane_hc_uls_rows) + 1)
-            _, nv, lv, rv = self.crane_hc_uls_rows[-1]
-            nv.set(row_data.get("name", ""))
-            lv.set(str(row_data.get("left", 0.0)))
-            rv.set(str(row_data.get("right", 0.0)))
-
-        for row_data in cr.get("transverse_sls", []):
-            self._add_crane_hc_row(
-                self.crane_hc_sls_frame, self.crane_hc_sls_rows,
-                "Hcs", len(self.crane_hc_sls_rows) + 1)
-            _, nv, lv, rv = self.crane_hc_sls_rows[-1]
-            nv.set(row_data.get("name", ""))
-            lv.set(str(row_data.get("left", 0.0)))
-            rv.set(str(row_data.get("right", 0.0)))
-
-        self._on_crane_toggle()
-
-        # Regenerate wind cases and update preview
-        self._auto_generate_wind_cases()
-        self._update_preview()
-
     def _save_config(self):
-        """Save current configuration to a JSON file."""
-        try:
-            cfg = self._collect_config()
-            filepath = filedialog.asksaveasfilename(
-                title="Save Configuration",
-                defaultextension=".json",
-                filetypes=[("JSON Config", "*.json"), ("All Files", "*.*")],
-                initialfile="portal_config.json",
-            )
-            if filepath:
-                with open(filepath, "w") as f:
-                    json.dump(cfg, f, indent=2)
-                self._add_recent(filepath)
-                self.status_label.config(
-                    text=f"Config saved: {os.path.basename(filepath)}",
-                    fg=COLORS["success"]
-                )
-        except Exception as e:
-            messagebox.showerror("Save Error", str(e))
+        save_config(self)
 
     def _load_config(self):
-        """Load configuration from a JSON file."""
-        filepath = filedialog.askopenfilename(
-            title="Load Configuration",
-            filetypes=[("JSON Config", "*.json"), ("All Files", "*.*")],
-        )
-        if filepath:
-            self._open_recent(filepath)
+        load_config(self)
 
     def _open_recent(self, path):
-        """Load a specific config file by path."""
-        try:
-            with open(path, "r") as f:
-                cfg = json.load(f)
-            self._apply_config(cfg)
-            self._add_recent(path)
-            self.status_label.config(
-                text=f"Loaded: {os.path.basename(path)}",
-                fg=COLORS["success"]
-            )
-        except FileNotFoundError:
-            messagebox.showerror("Load Error", f"File not found:\n{path}")
-            # Remove from recent list if file no longer exists
-            recent = self._load_recent_list()
-            recent = [p for p in recent if p != path]
-            self._save_recent_list(recent)
-            self._update_recent_menu()
-        except (json.JSONDecodeError, Exception) as e:
-            messagebox.showerror("Load Error", str(e))
-
-    def _load_recent_list(self) -> list:
-        """Read the recent files list from disk."""
-        try:
-            with open(self._RECENT_FILE, "r") as f:
-                data = json.load(f)
-            if isinstance(data, list):
-                return data
-        except (FileNotFoundError, json.JSONDecodeError):
-            pass
-        return []
-
-    def _save_recent_list(self, recent: list):
-        """Write the recent files list to disk."""
-        try:
-            os.makedirs(self._APP_DIR, exist_ok=True)
-            with open(self._RECENT_FILE, "w") as f:
-                json.dump(recent, f, indent=2)
-        except Exception:
-            pass
-
-    def _add_recent(self, path):
-        """Add a path to the recent list, trim to 10, save, and update menu."""
-        path = os.path.abspath(path)
-        recent = self._load_recent_list()
-        # Remove if already present, then prepend
-        recent = [p for p in recent if p != path]
-        recent.insert(0, path)
-        recent = recent[:10]
-        self._save_recent_list(recent)
-        self._update_recent_menu()
+        open_recent(self, path)
 
     def _update_recent_menu(self):
-        """Rebuild the Recent dropdown menu from the recent files list."""
-        self._recent_menu.delete(0, "end")
-        recent = self._load_recent_list()
-        if not recent:
-            self._recent_menu.add_command(label="(no recent files)", state="disabled")
-            return
-        for path in recent:
-            display = os.path.basename(path)
-            self._recent_menu.add_command(
-                label=display,
-                command=lambda p=path: self._open_recent(p),
-            )
+        update_recent_menu(self)
 
     def _on_close(self):
-        """Auto-save session state on window close."""
-        try:
-            cfg = self._collect_config()
-            os.makedirs(self._APP_DIR, exist_ok=True)
-            with open(self._LAST_SESSION, "w") as f:
-                json.dump(cfg, f, indent=2)
-        except Exception:
-            pass
-        self.destroy()
+        on_close(self)
 
     def _auto_restore(self):
-        """Restore last session state on startup."""
-        try:
-            with open(self._LAST_SESSION, "r") as f:
-                cfg = json.load(f)
-            self._apply_config(cfg)
-        except (FileNotFoundError, json.JSONDecodeError, Exception):
-            pass
+        auto_restore(self)
