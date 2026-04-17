@@ -2288,8 +2288,10 @@ class PortalFrameApp(tk.Tk):
         }
         cfg["earthquake"] = {
             "enabled": self.eq_enabled_var.get(),
+            "location": self.eq_location.get(),
             "Z": self.eq_Z.get(),
             "soil_class": self.eq_soil.get(),
+            "ductility": self.eq_ductility.get(),
             "mu": self.eq_mu.get(),
             "Sp": self.eq_Sp.get(),
             "Sp_sls": self.eq_Sp_sls.get(),
@@ -2386,8 +2388,18 @@ class PortalFrameApp(tk.Tk):
         # Earthquake
         eq = cfg.get("earthquake", {})
         self.eq_enabled_var.set(eq.get("enabled", False))
+        # Set location first; trigger the callback so the fault-distance
+        # label + Z auto-fill run. We then override Z with the explicit
+        # saved value so an engineer's manual Z edits are preserved.
+        self.eq_location.set(eq.get("location", "Wellington"))
+        self._on_eq_location_change()
         self.eq_Z.set(eq.get("Z", 0.40))
         self.eq_soil.set(eq.get("soil_class", "C"))
+        # Same pattern for ductility: set preset, fire auto-fill, then
+        # override mu/Sp with the explicit saved values.
+        self.eq_ductility.set(eq.get(
+            "ductility", "Nominally ductile (mu=1.25, Sp=0.925)"))
+        self._on_ductility_change()
         self.eq_mu.set(eq.get("mu", 1.25))
         self.eq_Sp.set(eq.get("Sp", 0.925))
         self.eq_Sp_sls.set(eq.get("Sp_sls", 0.7))
