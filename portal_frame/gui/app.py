@@ -1070,8 +1070,6 @@ class PortalFrameApp(tk.Tk):
             row_frame, _, _, _ = rows_list.pop()
             row_frame.destroy()
 
-    # ── Combos Tab ──
-
     # ── Helpers ──
 
     def _get_h_and_depth(self):
