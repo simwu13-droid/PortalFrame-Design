@@ -254,6 +254,9 @@ class LabeledCombo(tk.Frame):
         self.after_idle(self._finalize_focus_out)
 
     def _finalize_focus_out(self):
+        # Widget may have been destroyed while the after_idle callback was queued.
+        if not self.winfo_exists():
+            return
         # If focus has returned to our widget (popup click handled), do nothing.
         try:
             cur = self.focus_get()
