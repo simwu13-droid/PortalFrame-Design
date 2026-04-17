@@ -221,9 +221,16 @@ class LabeledCombo(tk.Frame):
         if self._popup_visible():
             self._hide_popup()
             return "break"
-        items = _filter_substring(self._all_values, self.var.get())
-        if not items:
+        # If the entry holds the committed value (or is empty), show the full
+        # list — user is browsing. If entry has uncommitted typed text, show
+        # substring matches — user is searching.
+        current = self.var.get()
+        if current == self._last_valid or current.strip() == "":
             items = list(self._all_values)
+        else:
+            items = _filter_substring(self._all_values, current)
+            if not items:
+                items = list(self._all_values)
         self._show_popup(items)
         self.entry.focus_set()
         self.entry.icursor("end")
