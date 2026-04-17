@@ -8,3 +8,4 @@ build/
 portal_12m_span_5deg.txt
 test_*.txt
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
