@@ -142,11 +142,133 @@ class MemberPopout(tk.Toplevel):
         self._refresh_table()
 
     def _redraw_chart(self):
-        self._chart.delete("all")
-        self._chart.create_text(
-            400, 180,
-            text=f"Chart: {self._dtype_var.get()} @ {self._case_var.get()}",
-            fill=COLORS["fg"], font=FONT_MONO)
+        c = self._chart
+        c.delete("all")
+
+        w = c.winfo_width() or 780
+        h = c.winfo_height() or 360
+        ml, mr, mt, mb = 60, 20, 30, 50  # margins: left, right, top, bottom
+        dw = w - ml - mr
+        dh = h - mt - mb
+        if dw <= 10 or dh <= 10:
+            return
+
+        case_name = self._case_var.get()
+        dtype = self._dtype_var.get()
+        attr = DIAGRAM_ATTRS[dtype]
+        unit = DIAGRAM_UNITS[dtype]
+
+        curves = self._get_curves(case_name, attr)
+        if not curves:
+            c.create_text(w // 2, h // 2, text="No data for this case",
+                          fill=COLORS["fg_dim"], font=FONT_SMALL)
+            return
+
+        # Determine y-range
+        all_vals = [v for pts in curves for _, v in pts]
+        y_max = max(all_vals + [0.0])
+        y_min = min(all_vals + [0.0])
+        y_half = max(abs(y_max), abs(y_min), 1e-6)
+        L = self._length
+
+        def sx(x):
+            return ml + (x / L) * dw if L > 0 else ml
+
+        def sy(v):
+            return mt + dh / 2 - (v / y_half) * (dh / 2)
+
+        # Zero line
+        zero_y = sy(0.0)
+        c.create_line(ml, zero_y, ml + dw, zero_y,
+                      fill=COLORS["fg_dim"], width=1, dash=(4, 3))
+
+        # Y-axis
+        c.create_line(ml, mt, ml, mt + dh,
+                      fill=COLORS["fg_dim"], width=1)
+
+        # X-axis (bottom)
+        c.create_line(ml, mt + dh, ml + dw, mt + dh,
+                      fill=COLORS["fg_dim"], width=1)
+
+        # X ticks and labels (6 evenly spaced)
+        for i in range(6):
+            x = i / 5.0 * L
+            tx_ = sx(x)
+            c.create_line(tx_, mt + dh, tx_, mt + dh + 5,
+                          fill=COLORS["fg_dim"])
+            c.create_text(tx_, mt + dh + 16, text=f"{x:.2f}",
+                          fill=COLORS["fg"], font=FONT_SMALL)
+
+        # Y ticks and labels (5 values: -y_half, -y_half/2, 0, y_half/2, y_half)
+        for i in range(-2, 3):
+            v = (i / 2.0) * y_half
+            ty_ = sy(v)
+            c.create_line(ml - 5, ty_, ml, ty_, fill=COLORS["fg_dim"])
+            c.create_text(ml - 8, ty_, text=f"{v:.2f}", anchor="e",
+                          fill=COLORS["fg"], font=FONT_SMALL)
+
+        # Axis labels
+        c.create_text(ml + dw / 2, h - 10,
+                      text=f"Position (m)   \u2014 L = {L:.2f} m",
+                      fill=COLORS["fg"], font=FONT_SMALL)
+        try:
+            c.create_text(10, mt + dh / 2,
+                          text=f"{dtype} ({unit})",
+                          fill=COLORS["fg"], font=FONT_SMALL, angle=90)
+        except tk.TclError:
+            c.create_text(10, mt + dh / 2,
+                          text=f"{dtype} ({unit})",
+                          fill=COLORS["fg"], font=FONT_SMALL)
+
+        # Curve colors: primary red-pink (matches DIAGRAM_COLORS["M"]), secondary dim
+        curve_colors = ["#e06c75", COLORS["fg_dim"]]
+        for idx, pts in enumerate(curves):
+            line_coords = []
+            for x, v in pts:
+                line_coords.extend([sx(x), sy(v)])
+            if len(line_coords) >= 4:
+                c.create_line(*line_coords,
+                              fill=curve_colors[idx % len(curve_colors)],
+                              width=2, tags="curve")
+
+        # Store geometry for hover tracker (Task 11)
+        self._chart_geom = {
+            "ml": ml, "mr": mr, "mt": mt, "mb": mb,
+            "dw": dw, "dh": dh, "L": L, "y_half": y_half,
+        }
+
+    def _get_curves(self, case_name, attr):
+        """Return list of [(position_m, value), ...] lists.
+
+        Single case/combo -> 1 list. Envelope -> 2 lists (max, min).
+        """
+        mid = self._mid
+        envelope_map = {
+            "ULS Envelope": self._out.uls_envelope_curves,
+            "SLS Envelope": self._out.sls_envelope_curves,
+            "SLS Wind Only Envelope": self._out.sls_wind_only_envelope_curves,
+        }
+        if case_name in envelope_map:
+            env = envelope_map[case_name]
+            if env is None:
+                return []
+            env_max, env_min = env
+            curves = []
+            for cr in (env_max, env_min):
+                mr = cr.members.get(mid)
+                if mr is None:
+                    continue
+                curves.append([(s.position, getattr(s, attr))
+                                for s in mr.stations])
+            return curves
+        cr = (self._out.case_results.get(case_name) or
+              self._out.combo_results.get(case_name))
+        if cr is None:
+            return []
+        mr = cr.members.get(mid)
+        if mr is None:
+            return []
+        return [[(s.position, getattr(s, attr)) for s in mr.stations]]
 
     def _refresh_table(self):
         for row in self._table.get_children():
