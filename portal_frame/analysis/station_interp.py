@@ -3,17 +3,12 @@
 from portal_frame.standards.utils import lerp
 
 
+# dx_local intentionally excluded — used only for diagram rotation, not a design quantity
 STATION_FIELDS = ("moment", "shear", "axial", "dy_local")
 
 
 def interpolate_station(stations, x_query):
-    """Linear interp of station fields at x_query (m along the member).
-
-    Returns a dict with keys STATION_FIELDS. Clamps x_query to the
-    [first.position, last.position] range (no extrapolation).
-
-    Raises ValueError if stations is empty.
-    """
+    """Linear interpolation of station fields at x_query (m along member); clamps to range, raises ValueError if empty."""
     if not stations:
         raise ValueError("stations is empty")
     sorted_st = sorted(stations, key=lambda s: s.position)

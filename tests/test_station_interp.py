@@ -46,5 +46,6 @@ def test_empty_stations_raises():
         interpolate_station([], 0.5)
 
 
-def test_station_fields_constant():
-    assert STATION_FIELDS == ("moment", "shear", "axial", "dy_local")
+def test_return_keys_match_station_fields():
+    result = interpolate_station(_stations(), 1.0)
+    assert set(result.keys()) == set(STATION_FIELDS)
