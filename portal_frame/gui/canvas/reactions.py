@@ -12,9 +12,7 @@ from portal_frame.gui.canvas.labels import create_boxed_draggable_label
 
 
 ARROW_MAX_PX = 60       # cap on arrow length (pixels)
-MZ_SCALE_FACTOR = 0.1   # MZ drawn 10x larger than proportional, since kNm is
-                        # typically smaller magnitude than kN forces
-MZ_ARC_RADIUS = 18      # px — curved-arrow radius for moment glyph
+MZ_ARC_RADIUS = 18      # px — arc scales proportionally from 0 to this radius based on mz/max_mz
 MZ_THRESHOLD = 0.01     # kNm below which MZ is treated as zero (pinned base)
 
 REACTION_COLOR = "#98c379"  # soft green, visually distinct from M/V/N/delta
@@ -86,7 +84,7 @@ def _draw_fy(canvas, sx, sy, fy, max_fy, amp):
 def _draw_mz(canvas, sx, sy, mz, max_mz, amp):
     if max_mz <= 1e-9:
         return
-    r = MZ_ARC_RADIUS * amp * min(1.0, abs(mz) / max_mz * MZ_SCALE_FACTOR * 10)
+    r = MZ_ARC_RADIUS * amp * min(1.0, abs(mz) / max_mz)
     r = max(r, 6)
     start = 30 if mz > 0 else 210
     extent = 270 if mz > 0 else -270
