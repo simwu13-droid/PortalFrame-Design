@@ -204,7 +204,7 @@ def update_frame(canvas, geom: dict, supports: tuple, loads: dict = None, diagra
         worst_util, worst_status = canvas._sls_worst_util()
         sls_color = canvas._dc_color_for(worst_status, worst_util)
 
-    def _line(pt_a, pt_b, base_color, role, dc_key):
+    def _line(pt_a, pt_b, base_color, role, dc_key, mid=None):
         if uls_on and dc_key in canvas._dc_groups and canvas._dc_groups[dc_key] is not None:
             chk = canvas._dc_groups[dc_key]
             # Use the worst of (combined, shear) for colouring so the
@@ -218,17 +218,20 @@ def update_frame(canvas, geom: dict, supports: tuple, loads: dict = None, diagra
         else:
             color = base_color
             width = member_width
-        canvas.create_line(*pt_a, *pt_b, fill=color, width=width)
+        tags = ("member", f"member_{mid}") if mid is not None else ()
+        canvas.create_line(*pt_a, *pt_b, fill=color, width=width, tags=tags)
 
     if roof_type == "mono":
-        _line(ns[1], ns[2], col_color, "col", "col_L")
-        _line(ns[2], ns[3], raf_color, "raf", "raf_L")
-        _line(ns[3], ns[4], col_color, "col", "col_R")
+        # Mono topology: 1=left col, 2=rafter, 3=right col
+        _line(ns[1], ns[2], col_color, "col", "col_L", mid=1)
+        _line(ns[2], ns[3], raf_color, "raf", "raf_L", mid=2)
+        _line(ns[3], ns[4], col_color, "col", "col_R", mid=3)
     else:
-        _line(ns[1], ns[2], col_color, "col", "col_L")
-        _line(ns[5], ns[4], col_color, "col", "col_R")
-        _line(ns[2], ns[3], raf_color, "raf", "raf_L")
-        _line(ns[3], ns[4], raf_color, "raf", "raf_R")
+        # Gable topology: 1=left col, 2=left rafter, 3=right rafter, 4=right col
+        _line(ns[1], ns[2], col_color, "col", "col_L", mid=1)
+        _line(ns[5], ns[4], col_color, "col", "col_R", mid=4)
+        _line(ns[2], ns[3], raf_color, "raf", "raf_L", mid=2)
+        _line(ns[3], ns[4], raf_color, "raf", "raf_R", mid=3)
 
     # ULS midpoint utilisation labels — two lines: util ratio on top,
     # dominant combo name on the bottom so the user can see which

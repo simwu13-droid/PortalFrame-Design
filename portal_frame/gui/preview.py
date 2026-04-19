@@ -102,6 +102,9 @@ class FramePreview(tk.Canvas):
         self.bind("<KeyRelease>", self._on_key_release)
         self.bind("<Enter>", lambda e: self.focus_set())
 
+        self._member_dblclick_handler = None
+        self.bind("<Double-Button-1>", self._on_member_double_click)
+
     def _on_resize(self, *args):
         on_resize(self, *args)
 
@@ -189,6 +192,25 @@ class FramePreview(tk.Canvas):
 
     def _on_key_release(self, event):
         on_key_release(self, event)
+
+    def set_member_dblclick_handler(self, handler):
+        """Register callable(mid) invoked when the user double-clicks a member."""
+        self._member_dblclick_handler = handler
+
+    def _on_member_double_click(self, event):
+        if self._member_dblclick_handler is None:
+            return
+        closest = self.find_closest(event.x, event.y, halo=3)
+        if not closest:
+            return
+        for tag in self.gettags(closest[0]):
+            if tag.startswith("member_"):
+                try:
+                    mid = int(tag.split("_", 1)[1])
+                except ValueError:
+                    return
+                self._member_dblclick_handler(mid)
+                return
 
     def set_diagram_type(self, dtype: str):
         _set_diagram_type_fn(self, dtype)

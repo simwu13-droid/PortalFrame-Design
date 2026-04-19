@@ -179,6 +179,8 @@ class PortalFrameApp(tk.Tk):
 
         self.preview = FramePreview(right, width=400, height=300)
         self.preview.grid(row=1, column=0, sticky="nsew", padx=8, pady=8)
+        self.preview.set_member_dblclick_handler(self._open_member_popout)
+        self._open_popouts = []
 
         bottom = tk.Frame(right, bg=COLORS["bg_panel"])
         bottom.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
@@ -452,3 +454,15 @@ class PortalFrameApp(tk.Tk):
 
     def _auto_restore(self):
         auto_restore(self)
+
+    def _open_member_popout(self, mid):
+        """Open a MemberPopout for the given member id."""
+        if self._analysis_output is None:
+            from tkinter import messagebox
+            messagebox.showinfo("No analysis",
+                                "Run Analyse (PyNite) before inspecting members.")
+            return
+        from portal_frame.gui.member_popout import MemberPopout
+        popout = MemberPopout(self, mid, self._analysis_output,
+                              self._analysis_topology)
+        self._open_popouts.append(popout)
