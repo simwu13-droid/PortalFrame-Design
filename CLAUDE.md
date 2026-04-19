@@ -58,13 +58,34 @@ portal_frame/
   gui/             Tkinter desktop GUI
     theme.py         COLORS, FONT constants
     widgets.py       LabeledEntry, LabeledCombo
-    dialogs.py       WindSurfacePanel (surface-based Cp,e table with Walls/Roof tabs)
-    preview.py       FramePreview canvas (2D rendering with loads)
-    app.py           PortalFrameApp main window, tab orchestration, generate flow
-    tabs/            (empty — tabs currently built inline in app.py)
+    dialogs/
+      __init__.py      Re-exports WindSurfacePanel — no caller changes needed
+      helpers.py       styled_entry() shared widget factory (avoids circular imports)
+      wall_builders.py build_walls_page, add_wall_row (free functions, panel as first arg)
+      roof_builders.py build_roof_page, rebuild_roof_table, build_roof_header_row, build_roof_crosswind_per_rafter, build_roof_transverse
+      wind_surface_panel.py WindSurfacePanel class — state, event handlers, recalc, public API (populate, get_surface_data)
+    preview.py       (~240 lines) FramePreview shell — composes canvas/* modules
+    app.py           (~440 lines) PortalFrameApp main window, tab orchestration
+    wind_generator.py  _auto_generate_wind_cases, _synthesize_wind_cases
+    persistence.py     _collect_config, _apply_config, recent files, auto-restore
+    analysis_runner.py _generate, _analyse, _run_design_checks, _bucket_*
+    diagram_controller.py _update_preview, _draw_preview, _build_diagram_data
+    tabs/
+      frame_tab.py     build_frame_tab + geometry/section handlers
+      wind_tab.py      build_wind_tab + wind-case select
+      earthquake_tab.py build_earthquake_tab + eq handlers
+      crane_tab.py     build_crane_tab + add/remove Hc rows
+      combos_tab.py    build_combos_tab
+    canvas/
+      interaction.py   pan, wheel zoom, zoom-extents, key press/release, tooltip
+      labels.py        make_draggable, drag_*, create_label, resolve_overlaps
+      hud.py           draw_hud, draw_axis_indicator
+      frame_render.py  update_frame, fit_to_window; defines DIAGRAM_COLORS
+      diagrams.py      draw_force_diagram, _draw_deflection_diagram; imports DIAGRAM_COLORS from frame_render
+      loads.py         draw_loads, _draw_udl_segment (UDL arrows + point load arrows)
   cli.py           CLI entry point
   run_gui.py       GUI entry point
-tests/             223 unit tests (standards, models, output, crane, PyNite solver, CFS checks incl. shear, serviceability)
+tests/             232 unit tests (standards, models, output, crane, PyNite solver, CFS checks incl. shear, serviceability)
 docs/
   CFS_Span_Table.xlsx  Formsteel span table (P kN, Mx kNm, Vy kN sheets; 1m–25m for P/Mx, no L for Vy)
 ```
@@ -79,18 +100,19 @@ docs/
 - **AnalysisSolver ABC** with `AnalysisRequest`/`AnalysisResults`. SpaceGass is one solver (export-only). Future integrated solvers (PyNite, OpenSees) implement the same interface.
 - **Library name normalization** (`LIBRARY_SG14_SECTION_FS.slsc` -> `"FS"`) happens at parse time in `io/section_library.py`, stored in `CFS_Section.library_name`.
 - **LoadCombination** dataclass lives in `standards/combinations_nzs1170_0.py` (output of standards logic, not raw input data).
+- **Canvas extraction pattern** — `gui/canvas/` helpers are free functions `fn(canvas, ...)`. Public methods on `FramePreview` are thin delegates; private helpers have no stub (callers moved with them). Tab builders follow the same pattern with `fn(app, parent)`.
 
 ### Adding New Features
 
 | Feature | Where to add |
 |---------|-------------|
 | New load type (earthquake) | `standards/earthquake_nzs1170_5.py` + `models/loads.py` (if new inputs) |
-| New GUI tab | Add name to `tab_names` in `gui/app.py:_build_ui()`, write `_build_X_tab()` method |
+| New GUI tab | Add `build_X_tab(app, parent)` in `gui/tabs/X_tab.py`; call from `app.py:_build_ui()` |
 | New solver | `solvers/new_solver.py` implementing `AnalysisSolver` |
 | New output format | `io/new_writer.py` (e.g., DXF, IFC) |
 | New section type | `models/sections.py` |
 | New capacity check | Add lookup in `standards/cfs_span_table.py`, add check in `standards/cfs_check.py` |
-| New SLS metric | Add check function in `standards/serviceability.py`, wire in `app.py::_run_design_checks()` |
+| New SLS metric | Add check function in `standards/serviceability.py`, wire in `gui/analysis_runner.py::_run_design_checks()` |
 | New span table section | Add entry to `LIBRARY_TO_SPANTABLE` dict in `cfs_span_table.py` |
 
 ## Critical Domain Knowledge
@@ -293,7 +315,7 @@ HUD buttons support optional tooltips (hover text drawn as canvas items, chained
 - Vertical member Iy/Iz ordering matters: `add_section(name, A, Iy, Iz, J)` — for 2D frame bending, Iz is the in-plane strong axis.
 
 ### Deflection diagram rotation formula (LOAD-BEARING — do not refactor casually)
-In `preview.py::_draw_deflection_diagram()`, global displacement is reconstructed from member-local `(dx_local, dy_local)` via:
+In `gui/canvas/diagrams.py::_draw_deflection_diagram()`, global displacement is reconstructed from member-local `(dx_local, dy_local)` via:
 - `Δscreen_x = α × (dx_local × mdx − dy_local × mdy) / L`
 - `Δscreen_y = α × (dx_local × mdy + dy_local × mdx) / L`
 
