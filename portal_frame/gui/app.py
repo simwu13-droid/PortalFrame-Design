@@ -462,7 +462,19 @@ class PortalFrameApp(tk.Tk):
             messagebox.showinfo("No analysis",
                                 "Run Analyse (PyNite) before inspecting members.")
             return
+        # Guard: topology may have replaced original member IDs with sub-members
+        # (e.g. crane brackets split column 1 into sub-members 6+7)
+        if (self._analysis_topology is None or
+                mid not in self._analysis_topology.members):
+            from tkinter import messagebox
+            messagebox.showinfo("Member unavailable",
+                                f"Member {mid} is not in the current topology "
+                                f"(crane brackets may have split this member).")
+            return
         from portal_frame.gui.member_popout import MemberPopout
         popout = MemberPopout(self, mid, self._analysis_output,
                               self._analysis_topology)
         self._open_popouts.append(popout)
+        popout.bind("<Destroy>",
+                    lambda e, p=popout: self._open_popouts.remove(p)
+                    if p in self._open_popouts else None)

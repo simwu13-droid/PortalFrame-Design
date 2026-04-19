@@ -210,7 +210,7 @@ class FramePreview(tk.Canvas):
                 except ValueError:
                     return
                 self._member_dblclick_handler(mid)
-                return
+                return "break"      # consume the event
 
     def set_diagram_type(self, dtype: str):
         _set_diagram_type_fn(self, dtype)
