@@ -4,6 +4,35 @@ from portal_frame.models.loads import EarthquakeInputs
 from portal_frame.standards.earthquake_nzs1170_5 import calculate_earthquake_forces
 
 
+def synthesise_envelope_reactions(analysis_output, combo_names):
+    """Build per-node reactions = signed value with max |magnitude| across combos.
+
+    For each support node seen in the selected combos, independently picks
+    the combo whose |fx| is largest (keeping sign), same for fy, same for mz.
+    Returns dict[node_id] -> ReactionResult.
+    """
+    from portal_frame.analysis.results import ReactionResult
+
+    node_best = {}  # node_id -> {fx: (abs, signed), fy: ..., mz: ...}
+    for name in combo_names:
+        cr = analysis_output.combo_results.get(name)
+        if cr is None:
+            continue
+        for nid, r in cr.reactions.items():
+            entry = node_best.setdefault(nid, {"fx": (-1.0, 0.0),
+                                               "fy": (-1.0, 0.0),
+                                               "mz": (-1.0, 0.0)})
+            for field, val in (("fx", r.fx), ("fy", r.fy), ("mz", r.mz)):
+                if abs(val) > entry[field][0]:
+                    entry[field] = (abs(val), val)
+
+    return {
+        nid: ReactionResult(node_id=nid,
+                            fx=vals["fx"][1], fy=vals["fy"][1], mz=vals["mz"][1])
+        for nid, vals in node_best.items()
+    }
+
+
 def update_preview(app, *args):
     """Called when inputs change -- invalidates stale analysis and redraws.
 
