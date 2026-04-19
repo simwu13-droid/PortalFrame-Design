@@ -169,6 +169,8 @@ def analyse(app):
         app.status_label.config(
             text="Analysis complete", fg=COLORS["success"]
         )
+        if hasattr(app, "export_reactions_btn"):
+            app.export_reactions_btn.config(state="normal")
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -420,3 +422,23 @@ def update_results_panel(app):
         app._results_text.tag_add("dc_nodata", f"{ln+1}.0", f"{ln+1}.end")
 
     app._results_text.config(state="disabled")
+
+
+def export_reactions(app):
+    """Ask for a path and write reactions CSV."""
+    if app._analysis_output is None:
+        messagebox.showwarning("No analysis", "Run Analyse (PyNite) first.")
+        return
+    path = filedialog.asksaveasfilename(
+        defaultextension=".csv",
+        filetypes=[("CSV", "*.csv"), ("All files", "*.*")],
+        initialfile="reactions.csv",
+    )
+    if not path:
+        return
+    try:
+        from portal_frame.io.reactions_csv import write_reactions_csv
+        write_reactions_csv(path, app._analysis_output)
+        messagebox.showinfo("Export complete", f"Reactions written to:\n{path}")
+    except Exception as e:
+        messagebox.showerror("Export failed", str(e))

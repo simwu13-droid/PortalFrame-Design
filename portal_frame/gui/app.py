@@ -219,6 +219,16 @@ class PortalFrameApp(tk.Tk):
         )
         self.analyse_btn.pack(side="left", padx=(8, 0))
 
+        self.export_reactions_btn = tk.Button(
+            btn_row, text="  EXPORT REACTIONS  ", font=FONT_BOLD,
+            fg=COLORS["fg_bright"], bg="#555555",
+            activebackground="#666666", activeforeground=COLORS["fg_bright"],
+            relief="flat", cursor="hand2", padx=10, pady=8,
+            command=self._export_reactions,
+            state="disabled",
+        )
+        self.export_reactions_btn.pack(side="left", padx=(8, 0))
+
         tk.Button(
             btn_row, text="  SAVE  ", font=FONT_BOLD,
             fg=COLORS["fg_bright"], bg="#555555",
@@ -410,8 +420,14 @@ class PortalFrameApp(tk.Tk):
     def _analyse(self):
         analyse(self)
 
+    def _export_reactions(self):
+        from portal_frame.gui.analysis_runner import export_reactions
+        export_reactions(self)
+
     def _invalidate_analysis(self):
         invalidate_analysis(self)
+        if hasattr(self, "export_reactions_btn"):
+            self.export_reactions_btn.config(state="disabled")
 
     def _group_design_checks_by_member(self) -> dict | None:
         return group_design_checks_by_member(self)
