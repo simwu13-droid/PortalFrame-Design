@@ -11,6 +11,7 @@ from portal_frame.gui.theme import COLORS, FONT_SMALL
 from portal_frame.gui.canvas.labels import _envelope_label_parts
 from portal_frame.gui.canvas.hud import draw_axis_indicator, draw_hud
 from portal_frame.gui.canvas.loads import draw_loads as _draw_loads
+from portal_frame.gui.canvas.reactions import draw_reactions as _draw_reactions
 
 
 DIAGRAM_COLORS = {
@@ -487,18 +488,19 @@ def update_frame(canvas, geom: dict, supports: tuple, loads: dict = None, diagra
         canvas.create_text(lx + 25, ly, text="Load", fill=COLORS["fg_dim"],
                          font=FONT_SMALL, anchor="w")
 
-    # Force diagram overlay
-    if diagram and diagram.get("data"):
-        canvas.draw_force_diagram(diagram, ns)
-
-    if diagram and diagram.get("data"):
-        dtype = diagram.get("type", "M")
-        dcolor = DIAGRAM_COLORS.get(dtype, "#e06c75")
-        ly += 16
-        canvas.create_line(lx, ly, lx + 20, ly, fill=dcolor, width=2)
-        label_map = {"M": "Moment", "V": "Shear", "N": "Axial", "δ": "Deflection"}
-        canvas.create_text(lx + 25, ly, text=label_map.get(dtype, dtype),
-                         fill=COLORS["fg_dim"], font=FONT_SMALL, anchor="w")
+    # Diagram overlay — dispatch by type
+    if diagram is not None:
+        dtype = diagram.get("type")
+        if dtype == "R":
+            _draw_reactions(canvas, diagram)
+        elif diagram.get("data"):
+            canvas.draw_force_diagram(diagram, ns)
+            dcolor = DIAGRAM_COLORS.get(dtype, "#e06c75")
+            ly += 16
+            canvas.create_line(lx, ly, lx + 20, ly, fill=dcolor, width=2)
+            label_map = {"M": "Moment", "V": "Shear", "N": "Axial", "δ": "Deflection"}
+            canvas.create_text(lx + 25, ly, text=label_map.get(dtype, dtype),
+                             fill=COLORS["fg_dim"], font=FONT_SMALL, anchor="w")
 
     # Drag offsets are intentionally NOT pruned here. Keeping the
     # offset for keys that aren't in the current redraw lets overlays

@@ -11,6 +11,7 @@ SCALE_KEYMAP = {
     "s": "V",   # Shear
     "d": "D",   # Deflection (delta)
     "f": "F",   # Load display
+    "r": "R",   # Reactions
 }
 
 

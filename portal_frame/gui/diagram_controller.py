@@ -48,7 +48,7 @@ def on_diagram_type_changed(app):
     dtype = app.diagram_type_var.get()
     # Map combobox values to scale keys used by _diagram_scales
     # "delta" (Unicode delta) maps to "D"; M/V/N pass through unchanged
-    scale_key = {"M": "M", "V": "V", "N": "N", "\u03b4": "D"}.get(dtype, dtype)
+    scale_key = {"M": "M", "V": "V", "N": "N", "\u03b4": "D", "Reactions": "R"}.get(dtype, dtype)
     app.preview.set_diagram_type(scale_key)
     draw_preview(app)
 
@@ -400,17 +400,7 @@ def build_diagram_data(app):
     if name is None:
         return None
 
-    attr = {"M": "moment", "V": "shear", "N": "axial", "\u03b4": "dy_local"}[dtype]
-
-    def _extract(cr, field):
-        return {
-            mid: [(s.position_pct, getattr(s, field)) for s in mr.stations]
-            for mid, mr in cr.members.items()
-        }
-
-    # Pass ALL topology node world coords so the preview can resolve
-    # non-hardcoded nodes (e.g. crane bracket nodes added by
-    # _insert_crane_brackets) when drawing per-member diagrams.
+    # Topology node coords — needed for both reaction display and diagram data
     members_map = {}
     topology_nodes = {}
     if app._analysis_topology:
@@ -421,6 +411,41 @@ def build_diagram_data(app):
         topology_nodes = {
             nid: (node.x, node.y)
             for nid, node in app._analysis_topology.nodes.items()
+        }
+
+    # --- Reactions branch ---
+    if dtype == "Reactions":
+        if name in ("ULS Envelope", "SLS Envelope", "SLS Wind Only Envelope"):
+            if name == "ULS Envelope":
+                combo_names = [n for n in out.combo_results if n.startswith("ULS")]
+            elif name == "SLS Envelope":
+                combo_names = [n for n in out.combo_results if n.startswith("SLS")]
+            else:
+                combo_names = [
+                    n for n in out.combo_results
+                    if n.startswith("SLS")
+                    and "wind only" in out.combo_descriptions.get(n, "").lower()
+                ]
+            reactions = synthesise_envelope_reactions(out, combo_names)
+        else:
+            cr = out.case_results.get(name) or out.combo_results.get(name)
+            if cr is None:
+                return None
+            reactions = cr.reactions
+        return {
+            "type": "R",
+            "reactions": reactions,
+            "topology_nodes": topology_nodes,
+            "members": members_map,
+        }
+    # --- /Reactions branch ---
+
+    attr = {"M": "moment", "V": "shear", "N": "axial", "\u03b4": "dy_local"}[dtype]
+
+    def _extract(cr, field):
+        return {
+            mid: [(s.position_pct, getattr(s, field)) for s in mr.stations]
+            for mid, mr in cr.members.items()
         }
 
     base = {

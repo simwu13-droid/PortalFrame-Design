@@ -72,7 +72,7 @@ class FramePreview(tk.Canvas):
 
         # Diagram amplitude scales — independent per type, persist across switches.
         # "F" is the load-arrow display scale, not a force-diagram type (no color/unit).
-        self._diagram_scales = {"M": 1.0, "V": 1.0, "N": 1.0, "D": 1.0, "F": 1.0}
+        self._diagram_scales = {"M": 1.0, "V": 1.0, "N": 1.0, "D": 1.0, "F": 1.0, "R": 1.0}
 
         # Keyboard modifier tracking for hold-and-scroll scaling
         self._active_modifier = None  # Current held key from _SCALE_KEYMAP

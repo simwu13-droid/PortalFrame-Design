@@ -116,9 +116,9 @@ class TestScaleKeymap:
         assert _SCALE_KEYMAP["d"] == "D"
         assert _SCALE_KEYMAP["f"] == "F"
 
-    def test_keymap_has_five_entries(self):
+    def test_keymap_has_six_entries(self):
         from portal_frame.gui.preview import _SCALE_KEYMAP
-        assert len(_SCALE_KEYMAP) == 5
+        assert len(_SCALE_KEYMAP) == 6
 
 
 # ── Diagram scale application ──

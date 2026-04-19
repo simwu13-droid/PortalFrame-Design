@@ -170,7 +170,7 @@ class PortalFrameApp(tk.Tk):
         self.diagram_type_var = tk.StringVar(value="M")
         self.diagram_type_combo = ttk.Combobox(
             load_bar, textvariable=self.diagram_type_var,
-            values=["M", "V", "N", "δ"], state="readonly", font=FONT_MONO, width=4)
+            values=["M", "V", "N", "δ", "Reactions"], state="readonly", font=FONT_MONO, width=10)
         self.diagram_type_combo.pack(side="left", padx=4)
         self.diagram_type_combo.bind("<<ComboboxSelected>>",
                                       lambda _: self._on_diagram_type_changed())
