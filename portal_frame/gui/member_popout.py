@@ -240,7 +240,7 @@ class MemberPopout(tk.Toplevel):
             return ml + (x / L) * dw if L > 0 else ml
 
         def sy(v):
-            return mt + dh / 2 - (v / y_half) * (dh / 2)
+            return mt + dh / 2 + (v / y_half) * (dh / 2)
 
         # Zero line
         zero_y = sy(0.0)
@@ -471,7 +471,7 @@ class MemberPopout(tk.Toplevel):
 
         def sy(v):
             y_half = geom["y_half"]
-            return mt + dh / 2 - (v / y_half) * (dh / 2)
+            return mt + dh / 2 + (v / y_half) * (dh / 2)
 
         r = 4
         for val, clr in zip(
