@@ -4,28 +4,33 @@ A Toplevel that shows a single-member X-Y diagram (M/V/N/delta) with a
 Point-of-Interest input and a summary table. Multiple popouts may be open
 simultaneously — each is independent.
 """
+import re
 import tkinter as tk
 from tkinter import ttk
 
 from portal_frame.gui.theme import COLORS, FONT_MONO, FONT_SMALL
+from portal_frame.gui.canvas.diagrams import DIAGRAM_UNITS
+from portal_frame.analysis.station_interp import interpolate_station, STATION_FIELDS
 
 
 DIAGRAM_TYPES = ["M", "V", "N", "\u03b4"]
-DIAGRAM_UNITS = {"M": "kNm", "V": "kN", "N": "kN", "\u03b4": "mm"}
+# δ maps to dy_local (local-perpendicular deflection); dx_local is for full deformed-shape only
 DIAGRAM_ATTRS = {"M": "moment", "V": "shear", "N": "axial", "\u03b4": "dy_local"}
 
 
 class MemberPopout(tk.Toplevel):
     """One member x one case x one diagram type, with POI table."""
 
-    def __init__(self, parent, mid, analysis_output, topology):
+    def __init__(self, parent, mid, analysis_output, topology, initial_case=None):
         super().__init__(parent)
+        # Keep this window above the main window — prevents it from being
+        # pushed behind when FramePreview's <Enter> calls focus_set().
+        self.transient(parent)
         self._mid = mid
         self._out = analysis_output
         self._topology = topology
         self._member = topology.members[mid]
         self._length = self._compute_length()
-        # Get section name from member if available
         section_name = getattr(self._member, "section_name", str(mid))
         self.title(f"Member {mid} \u2014 {section_name} "
                    f"(L={self._length:.2f} m)")
@@ -38,8 +43,16 @@ class MemberPopout(tk.Toplevel):
         self._build_poi_input()
         self._build_table()
 
+        self._refresh_member_list()
         self._refresh_case_list()
-        self._on_case_changed()
+        if initial_case:
+            for display, name in self._case_display_to_name.items():
+                if name == initial_case:
+                    self._case_var.set(display)
+                    break
+        # Defer first draw until after tkinter has laid out the window so
+        # winfo_width/height return real dimensions, not 1.
+        self.after_idle(self._on_case_changed)
 
     # ── layout ──────────────────────────────────────────────────────────
 
@@ -47,25 +60,38 @@ class MemberPopout(tk.Toplevel):
         top = tk.Frame(self, bg=COLORS["bg_panel"])
         top.pack(fill="x", padx=12, pady=(12, 4))
 
-        tk.Label(top, text="Load Case", font=FONT_SMALL,
+        # Member selector — left side
+        tk.Label(top, text="Member", font=FONT_SMALL,
                  fg=COLORS["fg"], bg=COLORS["bg_panel"]).pack(side="left")
-        self._case_var = tk.StringVar()
-        self._case_combo = ttk.Combobox(
-            top, textvariable=self._case_var, state="readonly",
-            font=FONT_MONO, width=28)
-        self._case_combo.pack(side="left", padx=(6, 16))
-        self._case_combo.bind("<<ComboboxSelected>>",
-                              lambda _: self._on_case_changed())
+        self._member_var = tk.StringVar()
+        self._member_combo = ttk.Combobox(
+            top, textvariable=self._member_var, state="readonly",
+            font=FONT_MONO, width=26)
+        self._member_combo.pack(side="left", padx=(6, 0))
+        self._member_combo.bind("<<ComboboxSelected>>",
+                                lambda _: self._on_member_changed())
 
-        tk.Label(top, text="Diagram", font=FONT_SMALL,
-                 fg=COLORS["fg"], bg=COLORS["bg_panel"]).pack(side="left")
+        # Diagram type — right side (pack right-to-left so Diagram is last/rightmost)
         self._dtype_var = tk.StringVar(value="M")
         self._dtype_combo = ttk.Combobox(
             top, textvariable=self._dtype_var, state="readonly",
             values=DIAGRAM_TYPES, font=FONT_MONO, width=4)
-        self._dtype_combo.pack(side="left", padx=(6, 0))
+        self._dtype_combo.pack(side="right", padx=(4, 0))
+        tk.Label(top, text="Diagram", font=FONT_SMALL,
+                 fg=COLORS["fg"], bg=COLORS["bg_panel"]).pack(side="right", padx=(16, 0))
         self._dtype_combo.bind("<<ComboboxSelected>>",
                                lambda _: self._redraw_chart())
+
+        # Load Case — right side, left of Diagram
+        self._case_var = tk.StringVar()
+        self._case_combo = ttk.Combobox(
+            top, textvariable=self._case_var, state="readonly",
+            font=FONT_MONO, width=30)
+        self._case_combo.pack(side="right", padx=(4, 0))
+        tk.Label(top, text="Load Case", font=FONT_SMALL,
+                 fg=COLORS["fg"], bg=COLORS["bg_panel"]).pack(side="right", padx=(16, 0))
+        self._case_combo.bind("<<ComboboxSelected>>",
+                              lambda _: self._on_case_changed())
 
     def _build_chart(self):
         self._chart = tk.Canvas(
@@ -113,17 +139,39 @@ class MemberPopout(tk.Toplevel):
         ne = self._topology.nodes[self._member.node_end]
         return ((ne.x - ns.x) ** 2 + (ne.y - ns.y) ** 2) ** 0.5
 
+    def _refresh_member_list(self):
+        items = []
+        self._member_id_list = []
+        for mid in sorted(self._topology.members.keys()):
+            mem = self._topology.members[mid]
+            ns = self._topology.nodes[mem.node_start]
+            ne = self._topology.nodes[mem.node_end]
+            L = ((ne.x - ns.x) ** 2 + (ne.y - ns.y) ** 2) ** 0.5
+            section = getattr(mem, "section_name", str(mid))
+            items.append(f"Member {mid} \u2014 {section} ({L:.2f} m)")
+            self._member_id_list.append(mid)
+        self._member_combo["values"] = items
+        if self._mid in self._member_id_list:
+            self._member_var.set(items[self._member_id_list.index(self._mid)])
+
     def _refresh_case_list(self):
-        values = list(self._out.case_results.keys())
-        values.extend(sorted(self._out.combo_results.keys(),
-                             key=lambda n: (0 if n.startswith("ULS") else 1,
-                                            self._combo_num(n))))
-        if self._out.uls_envelope_curves is not None:
-            values.append("ULS Envelope")
-        if self._out.sls_envelope_curves is not None:
-            values.append("SLS Envelope")
-        if self._out.sls_wind_only_envelope_curves is not None:
-            values.append("SLS Wind Only Envelope")
+        self._case_display_to_name = {}
+        values = []
+        for name in self._out.case_results.keys():
+            values.append(name)
+            self._case_display_to_name[name] = name
+        for name in sorted(self._out.combo_results.keys(),
+                           key=lambda n: (0 if n.startswith("ULS") else 1,
+                                          self._combo_num(n))):
+            desc = self._out.combo_descriptions.get(name, "")
+            display = f"{name}: {desc}" if desc else name
+            values.append(display)
+            self._case_display_to_name[display] = name
+        for label in ("ULS Envelope", "SLS Envelope", "SLS Wind Only Envelope"):
+            attr = label.lower().replace(" ", "_") + "_curves"
+            if getattr(self._out, attr, None) is not None:
+                values.append(label)
+                self._case_display_to_name[label] = label
         self._case_combo["values"] = values
         if values and not self._case_var.get():
             self._case_var.set(values[0])
@@ -135,7 +183,24 @@ class MemberPopout(tk.Toplevel):
         except (IndexError, ValueError):
             return 0
 
-    # ── callbacks (stubs — filled in Tasks 9-11) ────────────────────────
+    def _current_case_name(self):
+        """Resolve display string back to the actual case/combo/envelope name."""
+        display = self._case_var.get()
+        return self._case_display_to_name.get(display, display)
+
+    # ── callbacks ───────────────────────────────────────────────────────
+
+    def _on_member_changed(self):
+        idx = self._member_combo.current()
+        if idx < 0:
+            return
+        self._mid = self._member_id_list[idx]
+        self._member = self._topology.members[self._mid]
+        self._length = self._compute_length()
+        section_name = getattr(self._member, "section_name", str(self._mid))
+        self.title(f"Member {self._mid} \u2014 {section_name} "
+                   f"(L={self._length:.2f} m)")
+        self._on_case_changed()
 
     def _on_case_changed(self):
         self._redraw_chart()
@@ -145,15 +210,15 @@ class MemberPopout(tk.Toplevel):
         c = self._chart
         c.delete("all")
 
-        w = c.winfo_width() or 780
-        h = c.winfo_height() or 360
+        w = c.winfo_width() if c.winfo_width() > 10 else 780
+        h = c.winfo_height() if c.winfo_height() > 10 else 360
         ml, mr, mt, mb = 60, 20, 30, 50  # margins: left, right, top, bottom
         dw = w - ml - mr
         dh = h - mt - mb
         if dw <= 10 or dh <= 10:
             return
 
-        case_name = self._case_var.get()
+        case_name = self._current_case_name()
         dtype = self._dtype_var.get()
         attr = DIAGRAM_ATTRS[dtype]
         unit = DIAGRAM_UNITS[dtype]
@@ -190,9 +255,9 @@ class MemberPopout(tk.Toplevel):
         c.create_line(ml, mt + dh, ml + dw, mt + dh,
                       fill=COLORS["fg_dim"], width=1)
 
-        # X ticks and labels (6 evenly spaced)
-        for i in range(6):
-            x = i / 5.0 * L
+        # X ticks and labels (5 evenly spaced)
+        for i in range(5):
+            x = i / 4.0 * L
             tx_ = sx(x)
             c.create_line(tx_, mt + dh, tx_, mt + dh + 5,
                           fill=COLORS["fg_dim"])
@@ -231,10 +296,11 @@ class MemberPopout(tk.Toplevel):
                               fill=curve_colors[idx % len(curve_colors)],
                               width=2, tags="curve")
 
-        # Store geometry for hover tracker (Task 11)
         self._chart_geom = {
             "ml": ml, "mr": mr, "mt": mt, "mb": mb,
             "dw": dw, "dh": dh, "L": L, "y_half": y_half,
+            # Pre-sorted curves for hover interpolation — avoids re-sorting on every mouse event.
+            "curves": [sorted(pts, key=lambda p: p[0]) for pts in curves],
         }
 
     def _get_curves(self, case_name, attr):
@@ -255,27 +321,169 @@ class MemberPopout(tk.Toplevel):
             env_max, env_min = env
             curves = []
             for cr in (env_max, env_min):
-                mr = cr.members.get(mid)
-                if mr is None:
+                mem_result = cr.members.get(mid)
+                if mem_result is None:
                     continue
                 curves.append([(s.position, getattr(s, attr))
-                                for s in mr.stations])
+                                for s in mem_result.stations])
             return curves
         cr = (self._out.case_results.get(case_name) or
               self._out.combo_results.get(case_name))
         if cr is None:
             return []
-        mr = cr.members.get(mid)
-        if mr is None:
+        mem_result = cr.members.get(mid)
+        if mem_result is None:
             return []
-        return [[(s.position, getattr(s, attr)) for s in mr.stations]]
+        return [[(s.position, getattr(s, attr)) for s in mem_result.stations]]
+
+    def _parse_poi(self):
+        """Parse POI entry into list[float], silently discarding out-of-range values."""
+        raw = self._poi_var.get()
+        tokens = re.split(r"[\s,]+", raw.strip())
+        result = []
+        for token in tokens:
+            if not token:
+                continue
+            try:
+                v = float(token)
+            except ValueError:
+                continue
+            if 0.0 <= v <= self._length:
+                result.append(v)
+        return result
+
+    def _get_stations_for_case(self, case_name):
+        """Return (stations_or_None, envelope_pair_or_None) for the current member."""
+        envelope_map = {
+            "ULS Envelope": self._out.uls_envelope_curves,
+            "SLS Envelope": self._out.sls_envelope_curves,
+            "SLS Wind Only Envelope": self._out.sls_wind_only_envelope_curves,
+        }
+        if case_name in envelope_map:
+            env = envelope_map[case_name]
+            if env is None:
+                return None, None
+            return None, env
+        cr = (self._out.case_results.get(case_name) or
+              self._out.combo_results.get(case_name))
+        if cr is None:
+            return None, None
+        mem_result = cr.members.get(self._mid)
+        if mem_result is None:
+            return None, None
+        return mem_result.stations, None
 
     def _refresh_table(self):
         for row in self._table.get_children():
             self._table.delete(row)
 
+        pois = self._parse_poi()
+        if not pois:
+            return
+
+        case_name = self._current_case_name()
+        stations, env = self._get_stations_for_case(case_name)
+
+        if env is not None:
+            # Envelope path: pick max-abs-with-sign across max and min curves.
+            env_max, env_min = env
+            fields = STATION_FIELDS
+            for x in pois:
+                max_mem = env_max.members.get(self._mid)
+                min_mem = env_min.members.get(self._mid)
+                if max_mem is None or min_mem is None:
+                    continue
+                max_vals = interpolate_station(max_mem.stations, x)
+                min_vals = interpolate_station(min_mem.stations, x)
+                row_vals = {
+                    f: max_vals[f] if abs(max_vals[f]) >= abs(min_vals[f]) else min_vals[f]
+                    for f in fields
+                }
+                self._table.insert("", "end", values=(
+                    f"{x:.2f}",
+                    f"{row_vals['moment']:.2f}",
+                    f"{row_vals['shear']:.2f}",
+                    f"{row_vals['axial']:.2f}",
+                    f"{row_vals['dy_local']:.2f}",
+                ))
+        else:
+            if stations is None:
+                return
+            for x in pois:
+                vals = interpolate_station(stations, x)
+                self._table.insert("", "end", values=(
+                    f"{x:.2f}",
+                    f"{vals['moment']:.2f}",
+                    f"{vals['shear']:.2f}",
+                    f"{vals['axial']:.2f}",
+                    f"{vals['dy_local']:.2f}",
+                ))
+
     def _on_chart_motion(self, event):
-        pass
+        geom = getattr(self, "_chart_geom", None)
+        if geom is None:
+            return
+        ml, mt = geom["ml"], geom["mt"]
+        dw, dh, L = geom["dw"], geom["dh"], geom["L"]
+
+        cx = max(ml, min(event.x, ml + dw))
+        x_world = max(0.0, min((cx - ml) / dw * L, L))
+
+        self._chart.delete("hover_marker")
+        self._chart.create_line(
+            cx, mt, cx, mt + dh,
+            fill=COLORS["fg_dim"], dash=(2, 2), tags="hover_marker",
+        )
+
+        dtype = self._dtype_var.get()
+        unit = DIAGRAM_UNITS[dtype]
+        cached_curves = geom.get("curves", [])
+        if not cached_curves:
+            return
+
+        def _interp(pts, x):
+            if not pts:
+                return 0.0
+            if x <= pts[0][0]:
+                return pts[0][1]
+            if x >= pts[-1][0]:
+                return pts[-1][1]
+            for (xa, va), (xb, vb) in zip(pts, pts[1:]):
+                if xa <= x <= xb:
+                    t = (x - xa) / (xb - xa) if xb > xa else 0.0
+                    return va + t * (vb - va)
+            return 0.0
+
+        val_max = _interp(cached_curves[0], x_world)
+        if len(cached_curves) >= 2:
+            val_min = _interp(cached_curves[1], x_world)
+            label = (f"{dtype}: max={val_max:.2f}  min={val_min:.2f} {unit}"
+                     f"  x={x_world:.3f} m")
+        else:
+            label = f"{dtype} = {val_max:.2f} {unit}  x = {x_world:.3f} m"
+
+        self._chart.create_text(
+            cx + 6, mt + 14,
+            text=label,
+            anchor="w", fill=COLORS["fg"], font=FONT_SMALL,
+            tags="hover_marker",
+        )
+
+        def sy(v):
+            y_half = geom["y_half"]
+            return mt + dh / 2 - (v / y_half) * (dh / 2)
+
+        r = 4
+        for val, clr in zip(
+            [val_max] + ([val_min] if len(cached_curves) >= 2 else []),
+            [COLORS["accent"], COLORS["fg_dim"]],
+        ):
+            dot_y = sy(val)
+            self._chart.create_oval(
+                cx - r, dot_y - r, cx + r, dot_y + r,
+                outline=COLORS["fg"], fill=clr,
+                tags="hover_marker",
+            )
 
     def _clear_hover(self):
         self._chart.delete("hover_marker")

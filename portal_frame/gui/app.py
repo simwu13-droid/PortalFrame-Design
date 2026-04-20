@@ -472,8 +472,14 @@ class PortalFrameApp(tk.Tk):
                                 f"(crane brackets may have split this member).")
             return
         from portal_frame.gui.member_popout import MemberPopout
+        display = getattr(self, "diagram_case_var", None)
+        display = display.get() if display else None
+        initial_case = (self._diagram_display_to_name.get(display)
+                        if display and hasattr(self, "_diagram_display_to_name")
+                        else None)
         popout = MemberPopout(self, mid, self._analysis_output,
-                              self._analysis_topology)
+                              self._analysis_topology,
+                              initial_case=initial_case)
         self._open_popouts.append(popout)
         popout.bind("<Destroy>",
                     lambda e, p=popout: self._open_popouts.remove(p)

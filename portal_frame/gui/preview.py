@@ -200,17 +200,22 @@ class FramePreview(tk.Canvas):
     def _on_member_double_click(self, event):
         if self._member_dblclick_handler is None:
             return
-        closest = self.find_closest(event.x, event.y, halo=3)
-        if not closest:
-            return
-        for tag in self.gettags(closest[0]):
-            if tag.startswith("member_"):
-                try:
-                    mid = int(tag.split("_", 1)[1])
-                except ValueError:
-                    return
-                self._member_dblclick_handler(mid)
-                return "break"      # consume the event
+        # Search all items in the halo area — force diagram overlays sit on top of
+        # member lines, so find_closest alone returns the diagram item, not the member.
+        halo = 6
+        items = self.find_overlapping(
+            event.x - halo, event.y - halo,
+            event.x + halo, event.y + halo,
+        )
+        for iid in items:
+            for tag in self.gettags(iid):
+                if tag.startswith("member_"):
+                    try:
+                        mid = int(tag.split("_", 1)[1])
+                    except ValueError:
+                        continue
+                    self._member_dblclick_handler(mid)
+                    return "break"      # consume the event
 
     def set_diagram_type(self, dtype: str):
         _set_diagram_type_fn(self, dtype)

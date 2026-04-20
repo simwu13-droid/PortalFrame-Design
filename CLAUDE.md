@@ -53,23 +53,30 @@ portal_frame/
     spacegass.py     SpaceGassSolver (export-only, analysis done externally)
     pynite_solver.py PyNiteSolver — in-app FEM, per-station M/V/N/dy_local/dx_local
   analysis/        Post-processing and combinations (solver-agnostic)
-    results.py       MemberStationResult, MemberResult, CaseResult, AnalysisOutput, MemberDesignCheck, SLSCheck
-    combinations.py  combine_case_results() (linear superposition), compute_envelopes, compute_envelope_curves (ULS, SLS, SLS Wind Only)
+    results.py        MemberStationResult, MemberResult, CaseResult, AnalysisOutput, MemberDesignCheck, SLSCheck
+    combinations.py   combine_case_results() (linear superposition), compute_envelopes, compute_envelope_curves (ULS, SLS, SLS Wind Only)
+    station_interp.py interpolate_station(stations, x_query) — linear interp of MemberStationResult at arbitrary position
+  io/              File I/O — reading and writing
+    section_library.py   XML library parsing (find, parse, load, get)
+    spacegass_writer.py  SpaceGass v14 text output (SpaceGassWriter class)
+    config.py            JSON config parsing (FrameConfig dataclass) + example generation
+    reactions_csv.py     write_reactions_csv(path, analysis_output) — one row per (case, node) CSV export
   gui/             Tkinter desktop GUI
     theme.py         COLORS, FONT constants
     widgets.py       LabeledEntry, LabeledCombo
+    member_popout.py MemberPopout(tk.Toplevel) — per-member M/V/N/δ chart + POI table + hover tracker; opened on double-click
     dialogs/
       __init__.py      Re-exports WindSurfacePanel — no caller changes needed
       helpers.py       styled_entry() shared widget factory (avoids circular imports)
       wall_builders.py build_walls_page, add_wall_row (free functions, panel as first arg)
       roof_builders.py build_roof_page, rebuild_roof_table, build_roof_header_row, build_roof_crosswind_per_rafter, build_roof_transverse
       wind_surface_panel.py WindSurfacePanel class — state, event handlers, recalc, public API (populate, get_surface_data)
-    preview.py       (~240 lines) FramePreview shell — composes canvas/* modules
-    app.py           (~440 lines) PortalFrameApp main window, tab orchestration
+    preview.py       (~240 lines) FramePreview shell — composes canvas/* modules; double-click dispatches to member_dblclick_handler
+    app.py           (~440 lines) PortalFrameApp main window, tab orchestration; EXPORT REACTIONS button; _open_member_popout
     wind_generator.py  _auto_generate_wind_cases, _synthesize_wind_cases
     persistence.py     _collect_config, _apply_config, recent files, auto-restore
-    analysis_runner.py _generate, _analyse, _run_design_checks, _bucket_*
-    diagram_controller.py _update_preview, _draw_preview, _build_diagram_data
+    analysis_runner.py _generate, _analyse, _run_design_checks, _bucket_*; export_reactions(app)
+    diagram_controller.py _update_preview, _draw_preview, _build_diagram_data; synthesise_envelope_reactions(); "Reactions" → scale key "R"
     tabs/
       frame_tab.py     build_frame_tab + geometry/section handlers
       wind_tab.py      build_wind_tab + wind-case select
@@ -77,15 +84,16 @@ portal_frame/
       crane_tab.py     build_crane_tab + add/remove Hc rows
       combos_tab.py    build_combos_tab
     canvas/
-      interaction.py   pan, wheel zoom, zoom-extents, key press/release, tooltip
+      interaction.py   pan, wheel zoom, zoom-extents, key press/release, tooltip; SCALE_KEYMAP includes "r"→"R"
       labels.py        make_draggable, drag_*, create_label, resolve_overlaps
       hud.py           draw_hud, draw_axis_indicator
-      frame_render.py  update_frame, fit_to_window; defines DIAGRAM_COLORS
+      frame_render.py  update_frame, fit_to_window; defines DIAGRAM_COLORS, DIAGRAM_UNITS; tags member lines with "member_{mid}"
       diagrams.py      draw_force_diagram, _draw_deflection_diagram; imports DIAGRAM_COLORS from frame_render
       loads.py         draw_loads, _draw_udl_segment (UDL arrows + point load arrows)
+      reactions.py     draw_reactions(canvas, payload) — FX/FY/MZ arrows at base support nodes; REACTION_COLOR "#98c379"
   cli.py           CLI entry point
   run_gui.py       GUI entry point
-tests/             232 unit tests (standards, models, output, crane, PyNite solver, CFS checks incl. shear, serviceability)
+tests/             244 unit tests (standards, models, output, crane, PyNite solver, CFS checks incl. shear, serviceability, station_interp, reactions_csv, envelope_reactions)
 docs/
   CFS_Span_Table.xlsx  Formsteel span table (P kN, Mx kNm, Vy kN sheets; 1m–25m for P/Mx, no L for Vy)
 ```
@@ -157,6 +165,9 @@ docs/
 - Console output must avoid Unicode superscript characters (mm2 not mm², mm4 not mm⁴) due to cp1252 encoding
 - tkinter does not support alpha hex colors (e.g., `#ffffffaa` is invalid; use 6-digit hex only)
 - tkinter `pack()` does not accept `sticky` — that's a `grid()` option. Don't mix layout manager kwargs.
+- tkinter `winfo_width()` / `winfo_height()` return `1` (not `0`) before a window is laid out — `1 or 780` evaluates to `1` (truthy). Use `> 10` as the guard. Defer the first draw with `self.after_idle(callback)`.
+- `tk.Toplevel` windows need `self.transient(parent)` to stay above the main window on Windows — `FramePreview`'s `<Enter>` binding calls `focus_set()` which raises the main window above any unrelated Toplevel.
+- `canvas.find_closest()` returns only the topmost item — force diagram overlays sit above member lines. Use `canvas.find_overlapping(x-r, y-r, x+r, y+r)` and iterate all items to find `member_{mid}` tags.
 - SpaceGass can be automated via CLI with the `-s` flag for scripting.
 
 ## Roof Types & Geometry
@@ -233,6 +244,7 @@ HUD `[ULS]` button toggles per-member colour overlay (green <= 0.85, amber <= 1.
 ### Implementation
 - `standards/serviceability.py`: `check_apex_deflection()` and `check_eave_drift()` — pure functions, span derived from topology via `_topology_span_m()` to avoid input-staleness
 - `analysis/results.py`: `SLSCheck` dataclass on `AnalysisOutput.sls_checks`
+- `AnalysisOutput.combo_descriptions: dict[str, str]` — maps combo name (e.g. `"ULS-1"`) → human-readable description (e.g. `"1.35G"`); use for display strings in dropdowns
 - `analysis/combinations.py`: `compute_envelope_curves()` now also builds `sls_wind_only_envelope_curves` filtered by description substring `"wind only"`
 - GUI: Frame tab inputs for apex limits (span/X for wind and EQ) and drift limits (h/X for wind and EQ), results panel shows grouped rows, HUD `[SLS]` toggle button with rafter colour overlay and draggable apex + drift badges
 
