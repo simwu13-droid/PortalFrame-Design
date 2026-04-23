@@ -128,17 +128,39 @@ def _worst_per_category(
     return worst
 
 
+def _dead_only_combo(
+    combo_results: dict[str, CaseResult],
+    combo_descriptions: dict[str, str],
+) -> tuple[str, CaseResult] | None:
+    """Find the SLS combo whose description is exactly 'G' (dead only).
+
+    Returns (name, case_result) or None if no such combo exists.
+    """
+    for name, cr in combo_results.items():
+        if not name.startswith("SLS"):
+            continue
+        if combo_descriptions.get(name, "").strip() == "G":
+            return name, cr
+    return None
+
+
 def check_apex_deflection(
     topology: FrameTopology,
     combo_results: dict[str, CaseResult],
     combo_descriptions: dict[str, str],
     limit_ratio_wind: int,
     limit_ratio_eq: int,
+    limit_ratio_dead: int = 0,
 ) -> list[SLSCheck]:
     """Apex vertical deflection check.
 
-    Returns up to 2 SLSCheck entries — one per category that has
+    Returns up to 3 SLSCheck entries — one per category that has
     matching combos. Span is derived from the topology.
+
+    - wind: worst |dy| across SLS combos classified as wind/gravity.
+    - eq:   worst |dy| across SLS combos with E+/E- in description.
+    - dead: dy from the SLS combo whose description is exactly 'G'
+            (i.e. SLS-2). Skipped if limit_ratio_dead <= 0.
     """
     apex_id = _apex_node_id(topology)
     span_m = _topology_span_m(topology)
@@ -167,6 +189,22 @@ def check_apex_deflection(
             ref_symbol="L",
             combo_name=combo_name,
         ))
+
+    if limit_ratio_dead > 0:
+        dead = _dead_only_combo(combo_results, combo_descriptions)
+        if dead is not None:
+            name, cr = dead
+            dy = extract(cr)
+            if dy is not None:
+                checks.append(_build_check(
+                    metric="apex_dy",
+                    category="dead",
+                    deflection_mm=dy,
+                    ratio=limit_ratio_dead,
+                    ref_length_m=span_m,
+                    ref_symbol="L",
+                    combo_name=name,
+                ))
     return checks
 
 
@@ -176,12 +214,21 @@ def check_eave_drift(
     combo_descriptions: dict[str, str],
     limit_ratio_wind: int,
     limit_ratio_eq: int,
+    limit_ratio_eq_uls: int = 0,
+    k_dm: float = 1.2,
 ) -> list[SLSCheck]:
     """Horizontal drift at the eave nodes.
 
     For each SLS combo, finds the worst |dx| across all eave nodes,
     then reduces per category. Reference length is the eave height
     (column height above ground).
+
+    Categories:
+    - wind:   worst |dx| across SLS wind/gravity combos.
+    - eq:     worst |dx| across SLS combos with E+/E- in description.
+    - eq_uls: worst |dx| across ULS combos with E+/E- in description,
+              scaled by k_dm (drift modification factor, per NZS
+              1170.5 Cl 7.2). Skipped if limit_ratio_eq_uls <= 0.
     """
     eave_ids = _eave_node_ids(topology)
     if not eave_ids:
@@ -224,4 +271,30 @@ def check_eave_drift(
             ref_symbol="h",
             combo_name=combo_name,
         ))
+
+    if limit_ratio_eq_uls > 0:
+        worst_dx = 0.0
+        worst_name = None
+        for name, cr in combo_results.items():
+            if not name.startswith("ULS"):
+                continue
+            desc = combo_descriptions.get(name, "")
+            if "E+" not in desc and "E-" not in desc:
+                continue
+            dx = extract(cr)
+            if dx is None:
+                continue
+            if abs(dx) > abs(worst_dx):
+                worst_dx = dx
+                worst_name = name
+        if worst_name is not None:
+            checks.append(_build_check(
+                metric="drift",
+                category="eq_uls",
+                deflection_mm=worst_dx * k_dm,
+                ratio=limit_ratio_eq_uls,
+                ref_length_m=eave_height_m,
+                ref_symbol="h",
+                combo_name=worst_name,
+            ))
     return checks

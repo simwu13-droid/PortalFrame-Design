@@ -295,6 +295,7 @@ def run_design_checks(app):
         combo_descriptions=out.combo_descriptions,
         limit_ratio_wind=int(round(app.apex_limit_wind.get())),
         limit_ratio_eq=int(round(app.apex_limit_eq.get())),
+        limit_ratio_dead=int(round(app.apex_limit_dead.get())),
     )
     drift_checks = check_eave_drift(
         topology=app._analysis_topology,
@@ -302,6 +303,8 @@ def run_design_checks(app):
         combo_descriptions=out.combo_descriptions,
         limit_ratio_wind=int(round(app.drift_limit_wind.get())),
         limit_ratio_eq=int(round(app.drift_limit_eq.get())),
+        limit_ratio_eq_uls=int(round(app.drift_limit_eq_uls.get())),
+        k_dm=float(app.drift_kdm.get()),
     )
     out.sls_checks = apex_checks + drift_checks
 
@@ -379,30 +382,42 @@ def update_results_panel(app):
                     fail_lines.append(len(lines))
             lines.append(line)
 
-    # SLS deflection rows — grouped by metric (apex_dy, drift)
+    # SLS deflection rows — grouped by metric (apex_dy, drift).
+    # ULS EQ drift is shown in a separate section since it's a ULS check.
     if out.sls_checks:
-        metric_labels = {
-            "apex_dy": ("Serviceability (Apex dy):", "\u03b4v"),
-            "drift":   ("Serviceability (Eave drift):", "\u03b4h"),
-        }
-        for metric, (header, symbol) in metric_labels.items():
-            metric_rows = [c for c in out.sls_checks if c.metric == metric]
-            if not metric_rows:
-                continue
-            lines.append(header)
-            for slc in metric_rows:
-                line = (
-                    f"  {slc.category.upper():4s}  "
-                    f"{symbol}={slc.deflection_mm:>7.1f}mm  "
-                    f"limit={slc.reference_symbol}/{slc.ratio} "
-                    f"({slc.limit_mm:.1f}mm)  "
-                    f"actual={slc.reference_symbol}/{slc.actual_ratio}  "
-                    f"util={slc.util:.2f}  {slc.status}  "
-                    f"({slc.controlling_combo})"
-                )
-                if slc.status == "FAIL":
-                    fail_lines.append(len(lines))
-                lines.append(line)
+        def _emit_slc_line(slc):
+            symbol = "\u03b4v" if slc.metric == "apex_dy" else "\u03b4h"
+            line = (
+                f"  {slc.category.upper():6s}  "
+                f"{symbol}={slc.deflection_mm:>7.1f}mm  "
+                f"limit={slc.reference_symbol}/{slc.ratio} "
+                f"({slc.limit_mm:.1f}mm)  "
+                f"actual={slc.reference_symbol}/{slc.actual_ratio}  "
+                f"util={slc.util:.2f}  {slc.status}  "
+                f"({slc.controlling_combo})"
+            )
+            if slc.status == "FAIL":
+                fail_lines.append(len(lines))
+            lines.append(line)
+
+        sls_apex = [c for c in out.sls_checks if c.metric == "apex_dy"]
+        sls_drift = [c for c in out.sls_checks
+                     if c.metric == "drift" and c.category != "eq_uls"]
+        uls_drift = [c for c in out.sls_checks
+                     if c.metric == "drift" and c.category == "eq_uls"]
+
+        if sls_apex:
+            lines.append("Serviceability (Apex dy):")
+            for slc in sls_apex:
+                _emit_slc_line(slc)
+        if sls_drift:
+            lines.append("Serviceability (Eave drift):")
+            for slc in sls_drift:
+                _emit_slc_line(slc)
+        if uls_drift:
+            lines.append("Ultimate (Eave drift, EQ):")
+            for slc in uls_drift:
+                _emit_slc_line(slc)
 
     # Auto-grow the text widget so all lines are visible
     new_height = max(8, len(lines))

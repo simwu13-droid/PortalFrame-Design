@@ -375,3 +375,91 @@ def test_drift_zero_eave_height_returns_empty():
     result = check_eave_drift(
         topo, combos, descs, limit_ratio_wind=150, limit_ratio_eq=300)
     assert result == []
+
+
+# ─── Apex dead-only category ─────────────────────────────────────────
+
+def test_apex_dead_picks_SLS_G_combo():
+    """The dead category selects the SLS combo whose description is 'G'."""
+    topo = _default_topology()
+    combos = {
+        "SLS-1": _make_combo("SLS-1", apex_dy_mm=60.0),   # G + 0.7Q, worst wind
+        "SLS-2": _make_combo("SLS-2", apex_dy_mm=25.0),   # G alone
+        "SLS-3": _make_combo("SLS-3", apex_dy_mm=80.0),   # G + Ws, worst wind
+    }
+    descs = {"SLS-1": "G + 0.7Q", "SLS-2": "G", "SLS-3": "G + W1(s)"}
+    result = check_apex_deflection(
+        topo, combos, descs,
+        limit_ratio_wind=180, limit_ratio_eq=360, limit_ratio_dead=360)
+    dead = [c for c in result if c.category == "dead"]
+    assert len(dead) == 1
+    assert dead[0].controlling_combo == "SLS-2"
+    assert dead[0].deflection_mm == pytest.approx(25.0)
+
+
+def test_apex_dead_disabled_when_ratio_zero():
+    topo = _default_topology()
+    combos = {"SLS-2": _make_combo("SLS-2", apex_dy_mm=25.0)}
+    descs = {"SLS-2": "G"}
+    result = check_apex_deflection(
+        topo, combos, descs,
+        limit_ratio_wind=180, limit_ratio_eq=360, limit_ratio_dead=0)
+    assert [c for c in result if c.category == "dead"] == []
+
+
+def test_apex_dead_missing_G_combo():
+    topo = _default_topology()
+    combos = {"SLS-1": _make_combo("SLS-1", apex_dy_mm=60.0)}
+    descs = {"SLS-1": "G + 0.7Q"}
+    result = check_apex_deflection(
+        topo, combos, descs,
+        limit_ratio_wind=180, limit_ratio_eq=360, limit_ratio_dead=360)
+    assert [c for c in result if c.category == "dead"] == []
+
+
+# ─── Eave drift ULS-EQ category ──────────────────────────────────────
+
+def test_drift_eq_uls_reads_ULS_combos_scaled_by_kdm():
+    topo = _default_topology()
+    combos = {
+        "ULS-1": _make_combo("ULS-1", eave_dx_right=10.0),   # non-EQ ULS, ignored
+        "ULS-5": _make_combo("ULS-5", eave_dx_right=30.0),   # EQ ULS, picked
+        "ULS-6": _make_combo("ULS-6", eave_dx_right=-20.0),  # EQ ULS, smaller
+        "SLS-1": _make_combo("SLS-1", eave_dx_right=5.0),    # SLS, ignored by eq_uls
+    }
+    descs = {
+        "ULS-1": "1.35G", "ULS-5": "1.0G + E+", "ULS-6": "1.0G + E-",
+        "SLS-1": "G + W1(s)",
+    }
+    result = check_eave_drift(
+        topo, combos, descs,
+        limit_ratio_wind=150, limit_ratio_eq=200,
+        limit_ratio_eq_uls=40, k_dm=1.5)
+    eq_uls = [c for c in result if c.category == "eq_uls"]
+    assert len(eq_uls) == 1
+    assert eq_uls[0].controlling_combo == "ULS-5"
+    # deflection_mm = 30 * 1.5 = 45
+    assert eq_uls[0].deflection_mm == pytest.approx(45.0)
+
+
+def test_drift_eq_uls_disabled_when_ratio_zero():
+    topo = _default_topology()
+    combos = {"ULS-5": _make_combo("ULS-5", eave_dx_right=30.0)}
+    descs = {"ULS-5": "1.0G + E+"}
+    result = check_eave_drift(
+        topo, combos, descs,
+        limit_ratio_wind=150, limit_ratio_eq=200,
+        limit_ratio_eq_uls=0, k_dm=1.2)
+    assert [c for c in result if c.category == "eq_uls"] == []
+
+
+def test_drift_eq_uls_ignores_SLS_EQ_combos():
+    """Ensures SLS E+/E- combos don't leak into eq_uls category."""
+    topo = _default_topology()
+    combos = {"SLS-5": _make_combo("SLS-5", eave_dx_right=30.0)}
+    descs = {"SLS-5": "G + E+(s)"}
+    result = check_eave_drift(
+        topo, combos, descs,
+        limit_ratio_wind=150, limit_ratio_eq=200,
+        limit_ratio_eq_uls=40, k_dm=1.2)
+    assert [c for c in result if c.category == "eq_uls"] == []

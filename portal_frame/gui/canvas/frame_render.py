@@ -302,13 +302,13 @@ def update_frame(canvas, geom: dict, supports: tuple, loads: dict = None, diagra
             Rows are ordered wind-first-then-eq for consistency.
             Each row: '  CAT  delta=+X mm / L/Y  COMBO'
             """
-            order = {"wind": 0, "eq": 1}
-            rows_sorted = sorted(checks, key=lambda c: order.get(c.category, 2))
+            order = {"dead": 0, "wind": 1, "eq": 2, "eq_uls": 3}
+            rows_sorted = sorted(checks, key=lambda c: order.get(c.category, 9))
             lines = []
             for c in rows_sorted:
                 combo = f" {c.controlling_combo}" if c.controlling_combo else ""
                 lines.append(
-                    f"{c.category.upper():4s} "
+                    f"{c.category.upper():6s} "
                     f"\u03b4={c.deflection_mm:>6.1f}mm / "
                     f"{c.reference_symbol}/{c.actual_ratio}"
                     f"{combo}"

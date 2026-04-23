@@ -103,15 +103,30 @@ def build_frame_tab(app, parent):
     app.apex_limit_eq.pack(fill="x", **pad)
     app.apex_limit_eq.bind_change(app._on_design_input_change)
 
+    app.apex_limit_dead = LabeledEntry(
+        parent, "Apex dy limit (Dead)    span /", 360, "")
+    app.apex_limit_dead.pack(fill="x", **pad)
+    app.apex_limit_dead.bind_change(app._on_design_input_change)
+
     app.drift_limit_wind = LabeledEntry(
         parent, "Eave drift limit (Wind) h /", 150, "")
     app.drift_limit_wind.pack(fill="x", **pad)
     app.drift_limit_wind.bind_change(app._on_design_input_change)
 
     app.drift_limit_eq = LabeledEntry(
-        parent, "Eave drift limit (EQ)   h /", 300, "")
+        parent, "Eave drift limit (EQ SLS) h /", 200, "")
     app.drift_limit_eq.pack(fill="x", **pad)
     app.drift_limit_eq.bind_change(app._on_design_input_change)
+
+    app.drift_limit_eq_uls = LabeledEntry(
+        parent, "Eave drift limit (EQ ULS) h /", 40, "")
+    app.drift_limit_eq_uls.pack(fill="x", **pad)
+    app.drift_limit_eq_uls.bind_change(app._on_design_input_change)
+
+    app.drift_kdm = LabeledEntry(
+        parent, "EQ ULS drift factor k_dm", 1.2, "")
+    app.drift_kdm.pack(fill="x", **pad)
+    app.drift_kdm.bind_change(app._on_design_input_change)
 
     app._section_header(parent, "SUPPORTS")
 

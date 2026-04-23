@@ -34,8 +34,11 @@ def collect_config(app) -> dict:
     cfg["serviceability"] = {
         "apex_wind_ratio": int(round(app.apex_limit_wind.get())),
         "apex_eq_ratio": int(round(app.apex_limit_eq.get())),
+        "apex_dead_ratio": int(round(app.apex_limit_dead.get())),
         "drift_wind_ratio": int(round(app.drift_limit_wind.get())),
         "drift_eq_ratio": int(round(app.drift_limit_eq.get())),
+        "drift_eq_uls_ratio": int(round(app.drift_limit_eq_uls.get())),
+        "drift_kdm": float(app.drift_kdm.get()),
     }
     cfg["supports"] = {
         "left_base": app.left_support.get(),
@@ -131,8 +134,11 @@ def apply_config(app, cfg: dict):
     slsc = cfg.get("serviceability", {})
     app.apex_limit_wind.set(slsc.get("apex_wind_ratio", 180))
     app.apex_limit_eq.set(slsc.get("apex_eq_ratio", 360))
+    app.apex_limit_dead.set(slsc.get("apex_dead_ratio", 360))
     app.drift_limit_wind.set(slsc.get("drift_wind_ratio", 150))
-    app.drift_limit_eq.set(slsc.get("drift_eq_ratio", 300))
+    app.drift_limit_eq.set(slsc.get("drift_eq_ratio", 200))
+    app.drift_limit_eq_uls.set(slsc.get("drift_eq_uls_ratio", 40))
+    app.drift_kdm.set(slsc.get("drift_kdm", 1.2))
 
     # Supports
     sup = cfg.get("supports", {})
