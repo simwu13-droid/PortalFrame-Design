@@ -43,6 +43,9 @@ def collect_config(app) -> dict:
     cfg["supports"] = {
         "left_base": app.left_support.get(),
         "right_base": app.right_support.get(),
+        "fixity_percent": float(app.fixity_pct.get() or "0"),
+        "sls_partial_only": bool(app.sls_partial_only.get())
+        if hasattr(app, "sls_partial_only") else True,
     }
     cfg["loads"] = {
         "dead_load_roof": app.dead_roof.get(),
@@ -144,6 +147,11 @@ def apply_config(app, cfg: dict):
     sup = cfg.get("supports", {})
     app.left_support.set(sup.get("left_base", "pinned"))
     app.right_support.set(sup.get("right_base", "pinned"))
+    app.fixity_pct.set(f"{float(sup.get('fixity_percent', 0.0)):g}")
+    if hasattr(app, "sls_partial_only"):
+        app.sls_partial_only.set(bool(sup.get("sls_partial_only", True)))
+    if hasattr(app, "_update_fixity_entry_state"):
+        app._update_fixity_entry_state()
 
     # Loads
     ld = cfg.get("loads", {})

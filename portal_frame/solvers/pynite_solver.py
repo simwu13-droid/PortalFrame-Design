@@ -42,34 +42,39 @@ class PyNiteSolver(AnalysisSolver):
     def solve(self) -> AnalysisResults:
         case_names = self._build_case_names()
 
-        # Solve each unfactored load case individually
-        case_results = {}
-        for case_name in case_names:
-            model = self._new_model()
-            self._apply_loads(model, case_name)
-            model.add_load_combo("LC", {case_name: 1.0})
-            try:
-                model.analyze()
-            except Exception as e:
-                raise RuntimeError(
-                    f"PyNite analysis failed for case '{case_name}': {e}\n"
-                    "Check supports (singular stiffness matrix = mechanism) "
-                    "and member connectivity."
-                ) from e
-            case_results[case_name] = self._extract_results(model, case_name)
+        s = self._request.supports
+        has_partial = (s.left_base == "partial"
+                       or s.right_base == "partial")
+        dual_stiffness = has_partial and getattr(s, "sls_partial_only", True)
 
-        # Build combinations from NZS 1170.0
+        if dual_stiffness:
+            # Rotational springs change the stiffness matrix, so pinned-ULS
+            # and partial-SLS results cannot be superposed from one run.
+            # Solve every unfactored load case twice.
+            case_results_uls = self._solve_all_cases(case_names,
+                                                     force_pinned=True)
+            case_results_sls = self._solve_all_cases(case_names,
+                                                     force_pinned=False)
+        else:
+            case_results_uls = self._solve_all_cases(case_names,
+                                                     force_pinned=False)
+            case_results_sls = case_results_uls
+
         combos = self._get_combinations()
         combo_results = {}
         combo_descriptions = {}
         for combo in combos:
+            src = (case_results_sls if combo.name.startswith("SLS-")
+                   else case_results_uls)
             combo_results[combo.name] = combine_case_results(
-                case_results, combo.factors, combo.name
+                src, combo.factors, combo.name
             )
             combo_descriptions[combo.name] = combo.description
 
+        # Expose ULS (pinned, when dual_stiffness) case results on
+        # .case_results so the "Show Load Case" UI matches the ULS envelope.
         self._output = AnalysisOutput(
-            case_results=case_results,
+            case_results=case_results_uls,
             combo_results=combo_results,
             combo_descriptions=combo_descriptions,
         )
@@ -78,13 +83,42 @@ class PyNiteSolver(AnalysisSolver):
 
         return AnalysisResults(solved=True)
 
+    def _solve_all_cases(self, case_names, force_pinned: bool):
+        """Run the per-case solve loop under a single stiffness model.
+
+        When force_pinned is True, any "partial" bases are downgraded to
+        pinned before building the model — used to produce the ULS result
+        set when sls_partial_only is active.
+        """
+        results = {}
+        for case_name in case_names:
+            model = self._new_model(force_pinned=force_pinned)
+            self._apply_loads(model, case_name)
+            model.add_load_combo("LC", {case_name: 1.0})
+            try:
+                model.analyze()
+            except Exception as e:
+                raise RuntimeError(
+                    f"PyNite analysis failed for case '{case_name}' "
+                    f"(force_pinned={force_pinned}): {e}\n"
+                    "Check supports (singular stiffness matrix = mechanism) "
+                    "and member connectivity."
+                ) from e
+            results[case_name] = self._extract_results(model, case_name)
+        return results
+
     def export(self, path: str) -> None:
         pass  # PyNite solver does not export files
 
     # ── Model construction ──
 
-    def _new_model(self) -> FEModel3D:
-        """Build a fresh PyNite model with nodes, members, supports (no loads)."""
+    def _new_model(self, force_pinned: bool = False) -> FEModel3D:
+        """Build a fresh PyNite model with nodes, members, supports (no loads).
+
+        If force_pinned is True, any "partial" base condition is treated as
+        "pinned" so the resulting stiffness matrix has no rotational spring.
+        Used to produce the ULS result set when sls_partial_only is active.
+        """
         r = self._request
         model = FEModel3D()
 
@@ -110,6 +144,11 @@ class PyNiteSolver(AnalysisSolver):
         if len(base_nodes) >= 2:
             left_cond = r.supports.left_base
             right_cond = r.supports.right_base
+            if force_pinned:
+                if left_cond == "partial":
+                    left_cond = "pinned"
+                if right_cond == "partial":
+                    right_cond = "pinned"
             self._apply_support(model, base_nodes[0], left_cond)
             self._apply_support(model, base_nodes[-1], right_cond)
 
@@ -125,8 +164,45 @@ class PyNiteSolver(AnalysisSolver):
         name = f"N{node.id}"
         if condition == "fixed":
             model.def_support(name, True, True, True, True, True, True)
-        else:  # pinned
+        elif condition == "partial":
+            # Full restraint on DX, DY, DZ, RX, RY; RZ free and replaced
+            # by a rotational spring about the in-plane axis.
             model.def_support(name, True, True, True, True, True, False)
+            k_theta = self._compute_partial_ktheta(node)
+            if k_theta > 0.0:
+                model.def_support_spring(name, "RZ", k_theta)
+        else:  # "pinned"
+            model.def_support(name, True, True, True, True, True, False)
+
+    def _compute_partial_ktheta(self, base_node) -> float:
+        """Rotational spring stiffness for a partial-fixity base (kN*m/rad).
+
+        k_theta = alpha * 4 * E * Iz / L, where:
+          alpha — fixity_percent / 100, clamped to [0, 1]
+          E     — 200e6 kN/m^2 (matches Steel material)
+          Iz    — column section Iz_m (m^4)
+          L     — distance from base node to the highest node directly above
+                  (eave / knee), computed from topology coords
+        """
+        r = self._request
+        alpha = max(0.0, min(1.0, r.supports.fixity_percent / 100.0))
+        if alpha == 0.0:
+            return 0.0
+
+        E = 200e6  # kN/m^2, matches add_material("Steel", 200e6, ...)
+        Iz = r.column_section.Iz_m
+
+        # Find knee height: highest node with the same x as the base node.
+        x0 = base_node.x
+        ys_above = [n.y for n in r.topology.nodes.values()
+                    if abs(n.x - x0) < 1e-6 and n.y > base_node.y]
+        if not ys_above:
+            raise ValueError(
+                f"Partial fixity: no column node above base N{base_node.id}."
+            )
+        L = max(ys_above) - base_node.y
+
+        return alpha * 4.0 * E * Iz / L
 
     # ── Case map ──
 

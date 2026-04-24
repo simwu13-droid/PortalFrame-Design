@@ -133,41 +133,92 @@ def build_frame_tab(app, parent):
     sup_frame = tk.Frame(parent, bg=COLORS["bg_panel"])
     sup_frame.pack(fill="x", **pad)
 
+    def _mk_radio(row, var, text, value):
+        return tk.Radiobutton(
+            sup_frame, text=text, variable=var, value=value, font=FONT,
+            fg=COLORS["fg"], bg=COLORS["bg_panel"],
+            selectcolor=COLORS["bg_input"],
+            activebackground=COLORS["bg_panel"],
+            activeforeground=COLORS["fg"],
+            command=lambda: (app._update_fixity_entry_state(),
+                             app._update_preview()),
+        )
+
+    # Left base
     tk.Label(sup_frame, text="Left Base", font=FONT, fg=COLORS["fg"],
              bg=COLORS["bg_panel"]).grid(row=0, column=0, sticky="w")
     app.left_support = tk.StringVar(value="pinned")
-    tk.Radiobutton(sup_frame, text="Pinned", variable=app.left_support,
-                    value="pinned", font=FONT, fg=COLORS["fg"],
-                    bg=COLORS["bg_panel"], selectcolor=COLORS["bg_input"],
-                    activebackground=COLORS["bg_panel"],
-                    activeforeground=COLORS["fg"],
-                    command=app._update_preview
-                    ).grid(row=0, column=1, padx=(10, 4))
-    tk.Radiobutton(sup_frame, text="Fixed", variable=app.left_support,
-                    value="fixed", font=FONT, fg=COLORS["fg"],
-                    bg=COLORS["bg_panel"], selectcolor=COLORS["bg_input"],
-                    activebackground=COLORS["bg_panel"],
-                    activeforeground=COLORS["fg"],
-                    command=app._update_preview
-                    ).grid(row=0, column=2)
+    _mk_radio(0, app.left_support, "Pinned", "pinned").grid(
+        row=0, column=1, padx=(10, 4))
+    _mk_radio(0, app.left_support, "Fixed", "fixed").grid(
+        row=0, column=2, padx=(0, 4))
+    _mk_radio(0, app.left_support, "Partial", "partial").grid(
+        row=0, column=3)
 
+    # Right base
     tk.Label(sup_frame, text="Right Base", font=FONT, fg=COLORS["fg"],
-             bg=COLORS["bg_panel"]).grid(row=1, column=0, sticky="w", pady=(4, 0))
+             bg=COLORS["bg_panel"]).grid(row=1, column=0, sticky="w",
+                                          pady=(4, 0))
     app.right_support = tk.StringVar(value="pinned")
-    tk.Radiobutton(sup_frame, text="Pinned", variable=app.right_support,
-                    value="pinned", font=FONT, fg=COLORS["fg"],
-                    bg=COLORS["bg_panel"], selectcolor=COLORS["bg_input"],
-                    activebackground=COLORS["bg_panel"],
-                    activeforeground=COLORS["fg"],
-                    command=app._update_preview
-                    ).grid(row=1, column=1, padx=(10, 4), pady=(4, 0))
-    tk.Radiobutton(sup_frame, text="Fixed", variable=app.right_support,
-                    value="fixed", font=FONT, fg=COLORS["fg"],
-                    bg=COLORS["bg_panel"], selectcolor=COLORS["bg_input"],
-                    activebackground=COLORS["bg_panel"],
-                    activeforeground=COLORS["fg"],
-                    command=app._update_preview
-                    ).grid(row=1, column=2, pady=(4, 0))
+    _mk_radio(1, app.right_support, "Pinned", "pinned").grid(
+        row=1, column=1, padx=(10, 4), pady=(4, 0))
+    _mk_radio(1, app.right_support, "Fixed", "fixed").grid(
+        row=1, column=2, padx=(0, 4), pady=(4, 0))
+    _mk_radio(1, app.right_support, "Partial", "partial").grid(
+        row=1, column=3, pady=(4, 0))
+
+    # Shared fixity percent entry (row 2, spanning)
+    tk.Label(sup_frame, text="Fixity", font=FONT, fg=COLORS["fg"],
+             bg=COLORS["bg_panel"]).grid(row=2, column=0, sticky="w",
+                                          pady=(6, 0))
+    app.fixity_pct = tk.StringVar(value="0")
+    app._fixity_entry = tk.Entry(
+        sup_frame, textvariable=app.fixity_pct, width=6, font=FONT,
+        fg=COLORS["fg"], bg=COLORS["bg_input"],
+        insertbackground=COLORS["fg"], relief="flat",
+    )
+    app._fixity_entry.grid(row=2, column=1, padx=(10, 4), pady=(6, 0),
+                           sticky="w")
+    tk.Label(sup_frame, text="%", font=FONT, fg=COLORS["fg"],
+             bg=COLORS["bg_panel"]).grid(row=2, column=2, sticky="w",
+                                          pady=(6, 0))
+
+    app.sls_partial_only = tk.BooleanVar(value=True)
+    tk.Checkbutton(
+        sup_frame,
+        text="Apply to SLS only (ULS uses pinned)",
+        variable=app.sls_partial_only,
+        font=FONT, fg=COLORS["fg"], bg=COLORS["bg_panel"],
+        selectcolor=COLORS["bg_input"],
+        activebackground=COLORS["bg_panel"],
+        activeforeground=COLORS["fg"],
+        command=app._update_preview,
+    ).grid(row=2, column=3, padx=(10, 0), pady=(6, 0), sticky="w")
+
+    def _on_fixity_change(*_):
+        txt = app.fixity_pct.get().strip()
+        if txt == "":
+            app._update_preview()
+            return
+        try:
+            v = float(txt)
+        except ValueError:
+            return
+        clamped = max(0.0, min(100.0, v))
+        if clamped != v:
+            app.fixity_pct.set(f"{clamped:g}")
+        app._update_preview()
+
+    app.fixity_pct.trace_add("write", _on_fixity_change)
+
+    def _update_fixity_entry_state():
+        either_partial = (app.left_support.get() == "partial"
+                          or app.right_support.get() == "partial")
+        app._fixity_entry.configure(
+            state="normal" if either_partial else "disabled")
+
+    app._update_fixity_entry_state = _update_fixity_entry_state
+    _update_fixity_entry_state()
 
     app._section_header(parent, "LOADS  (unfactored, kPa)")
 

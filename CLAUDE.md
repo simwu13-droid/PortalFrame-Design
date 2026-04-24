@@ -176,6 +176,12 @@ docs/
 - Pitch warnings: <3 deg (ponding risk), >30 deg (unusually steep)
 - `roof_pitch_2` field on `PortalFrameGeometry`; legacy `apex_position_pct` still supported for backward compat
 
+## Base Supports
+
+Three options per base: **Pinned**, **Fixed**, **Partial**. Partial models a rotational spring about the in-plane axis using the linear fixity-factor convention `kθ = α · 4EI/L` (α = user %, E = 200 GPa, Iz from column section, L = eave/knee height). SpaceGass export stays pinned regardless; a header comment notes the fixity (and whether it applies to SLS only or ULS+SLS) when partial is active. Single shared `fixity_percent` on `SupportCondition` applies wherever either side is `"partial"`. Solver logic in `PyNiteSolver._apply_support()` + `_compute_partial_ktheta()`.
+
+**`sls_partial_only` flag (default True)**: when set, the PyNite solver runs each unfactored case twice — once with bases forced to pinned (used for ULS combos + `AnalysisOutput.case_results`) and once with the partial springs active (used for SLS combos). Rotational springs change the stiffness matrix, so pinned-ULS and partial-SLS results cannot be superposed from a single model run — hence the dual-stiffness pass. When unticked, partial fixity applies to both ULS and SLS (single-pass, original behaviour). The toggle only takes effect when at least one base is `"partial"`.
+
 ## Earthquake Loading (NZS 1170.5:2004)
 
 **Status: IMPLEMENTED** — equivalent static method, forces lumped at knee nodes.

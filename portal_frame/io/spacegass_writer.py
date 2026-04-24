@@ -130,6 +130,23 @@ class SpaceGassWriter:
     def _header(self) -> str:
         lines = []
         lines.append("SPACE GASS Text File - Version 1420")
+        s = self.supports
+        if getattr(s, "left_base", None) == "partial" or getattr(s, "right_base", None) == "partial":
+            alpha = getattr(s, "fixity_percent", 0.0)
+            sls_only = getattr(s, "sls_partial_only", True)
+            applied_to = "SLS only" if sls_only else "ULS and SLS"
+            lines.append(
+                f"! NOTE: in-app analysis used partial base fixity "
+                f"alpha = {alpha:g} % (k_theta = alpha*4EI/L)."
+            )
+            lines.append(
+                f"!       Applied to: {applied_to}."
+            )
+            lines.append(
+                "!       SpaceGass export retains pinned bases -- "
+                "re-enter rotational springs"
+            )
+            lines.append("!       manually in SpaceGass if needed.")
         lines.append("")
         lines.append(
             "UNITS LENGTH:m, SECTION:mm, STRENGTH:MPa, DENSITY:kg/m^3, "

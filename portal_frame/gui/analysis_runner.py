@@ -25,9 +25,18 @@ def build_analysis_request(app):
 
     geom = app._build_geometry()
 
+    try:
+        fixity_pct = float(app.fixity_pct.get() or "0")
+    except ValueError:
+        fixity_pct = 0.0
+    fixity_pct = max(0.0, min(100.0, fixity_pct))
+
     supports = SupportCondition(
         left_base=app.left_support.get(),
         right_base=app.right_support.get(),
+        fixity_percent=fixity_pct,
+        sls_partial_only=bool(app.sls_partial_only.get())
+        if hasattr(app, "sls_partial_only") else True,
     )
 
     wind_cases = app._synthesize_wind_cases()
